@@ -42,37 +42,58 @@ end
 
 module DList =
 struct
-    type 'a t = { mutable prev: 'a t option; mutable next: 'a t option; mutable item: 'a option }
+    type 'a t = { mutable prev: 'a t option; mutable next: 'a t option; mutable item: 'a option; _id: int }
+    let cur_id = ref 0
+
+    let equal a b =
+        a._id = b._id
 
     let get (Some x) = x
 
     let create () =
-        let rec a = { prev = None; next = Some b; item = None }
-            and b = { prev = Some a; next = None; item = None }
-        in b
+        let rec a = { prev = None; next = Some b; item = None; _id = !cur_id }
+            and b = { prev = Some a; next = None; item = None; _id = !cur_id + 1 }
+        in cur_id := !cur_id + 2; a
     let remove x =
         (get x.prev).next <- x.next;
         (get x.next).prev <- x.prev;
         get x.next
 
-    let insert_before a l =
-        let it = { prev = l.prev; next = Some l; item = a } in
-        (get l.prev).next <- Some it;
-        l.prev <- Some it;
-        it
+    let insert_after a l =
+        let it = { prev = Some l; next = l.next; item = Some a; _id = !cur_id } in
+        cur_id := !cur_id + 1;
+        (get l.next).prev <- Some it;
+        l.next <- Some it;
+        l
 
     let rec of_list l =
         match l with
             [] -> create ()
-          | h::t -> insert_before h (of_list l)
-end
+          | h::t -> insert_after h (of_list t)
 
-let (++) = DList.insert_before
+    let rec _begin l =
+        match l.prev with
+            None -> l
+          | Some p -> _begin p
+    
+    let rec _end l =
+        match l.next with
+            None -> l
+          | Some n -> _end n
+
+    let rec to_list a b =
+        if equal a b || a.next = None then []
+        else let nx = get a.next in
+            if equal nx b then []
+            else get nx.item :: to_list nx b
+
+end
 
 module type TokenType =
 sig
     type t = LeftBracket 
             | RightBracket
+            | Comma
             | SemiColon
             | Equality
             | Arrow
@@ -94,6 +115,7 @@ module Token : TokenType =
 struct
     type t = LeftBracket 
             | RightBracket
+            | Comma
             | SemiColon
             | Equality
             | Arrow
@@ -114,7 +136,7 @@ struct
                     (Letter, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM_");
                     (Whitespace, " \n\t\r");
                     (Dot, ".");
-                    (Special1, "();");
+                    (Special1, "();,");
                     (Special2, "@$:~!%^&*-+=[]|<,>/")]
 
     let keywords =
@@ -123,7 +145,10 @@ struct
         and keywords_list = ["let"; "in"; "when"; "and"; "with"; "if"; "then"; "else"]
         in  make_hashtbl (Hashtbl.create 10) keywords_list
 
-    let special1_type c = let specials = [('(', LeftBracket); (')', RightBracket); (';', SemiColon)] in
+    let special1_type c = let specials = [('(', LeftBracket);
+                                          (')', RightBracket); 
+                                          (';', SemiColon);
+                                          (',', Comma)] in
         List.assoc c specials
 
     let char_type c =
@@ -219,10 +244,10 @@ struct
     let classify_operators tok =
         let expr t =
             match t with
-                Int _ -> true
-              | Float (_, _) -> true
-              | String _ -> true
-              | Char _ -> true
+                Int _
+              | Float (_, _)
+              | String _
+              | Char _
               | Id _ -> true
               | _ -> false
             in
@@ -241,7 +266,7 @@ struct
                 else let h::t = make_list(i+1) in (c::h)::t
             in
         let text_parsed = parse_text (List.map (fun f -> Raw f) (make_list 0)) in
-        parse text_parsed
+        classify_operators (parse text_parsed)
 end
 
 module Program =
@@ -263,42 +288,38 @@ struct
                    | LetIn of definition_list * expression
     and definition = pattern * expression
     and definition_list = definition list
-    and pattern = varID
+    and pattern = expression
     
     type statement = Definition of definition
                    | DefinitionList of definition_list
                    | Expression of expression
-                   | Pattern of pattern
                    | Raw of Token.t
 
     type t = { ids: (string, varID) Hashtbl.t; values: value Stack.t Vector.t }
 
     let parse tok =
+        if tok = [] then failwith "Expression is empty" else
         let rec parse_atom tok =
             match tok with
                 [] -> []
-              | Token.Int x :: t -> Expression (Constant (VInt x)) :: parse_atom tok
-              | Token.Float (x, y) :: t -> Expression (Constant (VFloat x)) :: parse_atom tok
-              | Token.String x :: t -> Expression (Constant (VString x)) :: parse_atom tok
-              | Token.Char x :: t -> Expression (Constant (VChar x)) :: parse_atom tok
-              | Token.Id x :: t -> Expression (Variable (TextID x)) :: parse_atom tok
-              | h :: t -> Raw h :: parse_atom tok
+              | Token.Int x :: t -> Expression (Constant (VInt x)) :: parse_atom t
+              | Token.Float (x, y) :: t -> Expression (Constant (VFloat x)) :: parse_atom t
+              | Token.String x :: t -> Expression (Constant (VString x)) :: parse_atom t
+              | Token.Char x :: t -> Expression (Constant (VChar x)) :: parse_atom t
+              | Token.Id x :: t -> Expression (Variable (TextID x)) :: parse_atom t
+              | h :: t -> Raw h :: parse_atom t
             in
-        let brackets = [(Token.LeftBracket, Token.RightBracket); (Token.Keyword "let", Token.Equality);
-                        (Token.Equality, Token.Keyword "in"); (Token.Keyword "if", Token.Keyword "then");
-                        (Token.Keyword "then", Token.Keyword "else")] in
         let rec fold_expr bg en =
-            if bg != en then
-                let open DList in
-                let bg, en = get bg.prev, get en.next in
-                
+            let open DList in
+            if not (equal bg en) && not (equal (get bg.next) (get en.prev)) then
+            begin
                 (* fold after keywords else, in, -> *)
                 let fold_after = [Token.Keyword "else"; Token.Keyword "in"; Token.Arrow] in
                 let it = ref (get bg.next) in
-                while !it != en do
+                while not (equal !it en) do
                     begin match !it.item with
                         Some (Raw token) when List.mem token fold_after ->
-                            fold_expr !it en
+                            ignore (fold_expr !it en)
                       | _ -> ()
                     end;
                     it := get !it.next
@@ -306,7 +327,7 @@ struct
 
                 (* brackets *)
                 let it = ref (get (get bg.next).next) in
-                while !it != en && !it != get en.prev do
+                while not (equal !it en) && not (equal !it (get en.prev)) do
                     begin match !it.item, (get !it.prev).item, (get !it.next).item with
                         Some (Expression e), Some (Raw (Token.LeftBracket)), Some (Raw (Token.RightBracket)) ->
                             ignore (remove (get !it.next));
@@ -326,32 +347,32 @@ struct
                                                       Raw (Token.Keyword "else");
                                                       Expression b] ->
                                                       Expression (IfElse (cond, a, b))); argc = 5 });
-                                ("fun", { func = (fun [Pattern pat;
+                                ("fun", { func = (fun [Expression pat;
                                                        Raw Token.Arrow;
                                                        Expression e] ->
                                                        Expression (Constant (VFunction (pat, e))));
                                                        argc = 3});
-                                ("let", { func = (fun [Pattern pat;
+                                ("let", { func = (fun [Expression pat;
                                                        Raw Token.Equality;
                                                        Expression e] ->
                                                        DefinitionList [(pat, e)]); argc = 3});
-                                ("and", { func = (fun [Pattern pat;
+                                ("and", { func = (fun [Expression pat;
                                                        Raw Token.Equality;
                                                        Expression e] ->
                                                        Definition (pat, e)); argc = 3})] in
                 let it = ref (get bg.next) in
-                while !it != en do
+                while not (equal !it en) do
                     begin match !it.item with
                         Some (Raw (Token.Keyword key)) ->
                             begin try let comp = List.assoc key comps in
                                 let rec cut_n it n =
                                     if n = 0 then []
-                                    else if it == en then failwith "Parse error"
+                                    else if equal it en then failwith "Parse error: unexpected end of expression"
                                     else let ret = get it.item :: cut_n (get it.next) (n-1) in
                                          remove it; ret
                                 in let l = cut_n (get !it.next) comp.argc
                                 in !it.item <- Some (comp.func l)
-                            with Not_found -> () | _ -> failwith "Parse error"
+                            with Not_found -> () | _ -> failwith "Parse error: syntax error"
                             end
                       | _ -> ()
                     end;
@@ -359,7 +380,7 @@ struct
                 done;
 
                 let it = ref (get (get bg.next).next) in
-                while !it != en do
+                while not (equal !it en) do
                     begin match !it.item, (get !it.prev).item with
                         Some (Definition d), Some (DefinitionList l) ->
                             !it.item <- Some (DefinitionList (d :: l));
@@ -367,7 +388,7 @@ struct
                       | Some (Raw (Token.Keyword "in")), Some (DefinitionList d) ->
                         begin
                             let next = get !it.next in
-                            if next != en then
+                            if not (equal next en) then
                                 match next.item with
                                     Some (Expression e) ->
                                         !it.item <- Some (Expression (LetIn (d, e)));
@@ -381,7 +402,7 @@ struct
                 done;
 
                 let it = ref (get (get bg.next).next) in
-                while !it != en && !it != get en.prev do
+                while not (equal !it en) && not (equal !it (get en.prev)) do
                     begin match !it.item, (get !it.prev).item, (get !it.next).item with
                         Some (Expression e), Some (Raw (Token.LeftBracket)), Some (Raw (Token.RightBracket)) ->
                             ignore (remove (get !it.next));
@@ -393,7 +414,7 @@ struct
 
                 (* unary operators*)
                 let it = ref (get (get en.prev).prev) in 
-                while !it != bg do
+                while not (equal !it bg) do
                     begin match !it.item, (get !it.next).item with
                             Some (Raw (Token.UnaryOperator op)), Some (Expression e) ->
                                 !it.item <- Some (Expression (UnaryOperator (TextID op, e)));
@@ -405,7 +426,7 @@ struct
 
                 (* functions *)
                 let it = ref (get (get bg.next).next) in
-                while !it != en do
+                while not (equal !it en) do
                     begin match (get !it.prev).item, !it.item with
                         Some (Expression a), Some (Expression b) ->
                             !it.item <- Some (Expression (Function (a, b)));
@@ -418,10 +439,12 @@ struct
                 (* binary operators *)
                 let fold_bin filter =
                     let it = ref (get (get bg.next).next) in
-                    while !it != en && !it != get en.prev do
+                    while not (equal !it en) && not (equal !it (get en.prev)) do
                         begin match !it.item, (get !it.prev).item, (get !it.next).item with
                             Some (Raw (Token.BinaryOperator op)), Some (Expression a), Some (Expression b)
                                 when filter op ->
+                                    print_string op;
+                                    print_newline ();
                                     !it.item <- Some (Expression (BinaryOperator (TextID op, a, b)));
                                     ignore (remove (get !it.next));
                                     ignore (remove (get !it.prev))
@@ -438,8 +461,37 @@ struct
                 fold_bin (list_filter ["==";">";"<";">=";"<="]);
                 fold_bin (list_filter ["||";"&&"]);
                 fold_bin (list_filter ["::"]);
-                fold_bin (fun x -> true);
-                if bg.next != en.prev then failwith "Parse error"
-            in ()
-
+                fold_bin (fun _ -> true);
+                if not (equal (get bg.next) (get en.prev)) then failwith "Parse error: failed to fold all tokens"
+            end
+            in
+        let left_brackets = [Token.LeftBracket; Token.Keyword "if"; Token.Keyword "let"; Token.Keyword "fun"]
+        and separators = [Token.Comma; Token.Keyword "then"; Token.Keyword "and"; Token.Equality]
+        and right_brackets = [Token.RightBracket; Token.Keyword "else"; Token.Keyword "in"; Token.Arrow] in
+        let fold_brackets dl =
+            let open DList in
+            let it = ref dl in
+            let st = Stack.create () in
+            while !it.item <> None do
+                begin match !it.item with
+                    Some (Raw x) ->
+                        if List.mem x separators || List.mem x right_brackets then begin
+                            let prev = try Stack.pop st with Stack.Empty -> failwith "Parse error: unmatched token" in 
+                            ignore (fold_expr prev !it)
+                        end;
+                        if List.mem x separators || List.mem x left_brackets then
+                            Stack.push !it st
+                  | _ -> ()
+                end;
+                it := get !it.next
+            done;
+            while not (Stack.is_empty st) do
+                ignore (fold_expr (Stack.pop st) !it)
+            done
+            in
+        let dl = DList.of_list (parse_atom tok) in
+        fold_brackets dl;
+        fold_expr dl (DList._end dl);
+        let open DList in
+        get (get dl.next).item
 end
