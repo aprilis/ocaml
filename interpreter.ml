@@ -142,7 +142,7 @@ struct
     let keywords =
         let rec make_hashtbl tbl l =
             match l with [] -> tbl | h::t -> Hashtbl.add tbl h h; make_hashtbl tbl t
-        and keywords_list = ["let"; "in"; "when"; "and"; "with"; "if"; "then"; "else"]
+        and keywords_list = ["let"; "in"; "and"; "if"; "then"; "else"; "fun"]
         in  make_hashtbl (Hashtbl.create 10) keywords_list
 
     let special1_type c = let specials = [('(', LeftBracket);
@@ -470,7 +470,7 @@ struct
         and right_brackets = [Token.RightBracket; Token.Keyword "else"; Token.Keyword "in"; Token.Arrow] in
         let fold_brackets dl =
             let open DList in
-            let it = ref dl in
+            let it = ref (get dl.next) in
             let st = Stack.create () in
             while !it.item <> None do
                 begin match !it.item with
