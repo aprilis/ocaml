@@ -271,7 +271,7 @@ end
 
 module Program =
 struct
-    type varID = TextID of string | IndexID of int
+    type varID = TextID of string | IndexID of int * string
     type value = VInt of int 
                | VFloat of float 
                | VString of string 
@@ -281,7 +281,8 @@ struct
                | VFunction of pattern * expression
     and expression = Constant of value
                    | Variable of varID
-                   | Function of expression * expression
+                   | Call of expression * expression
+                   | Lambda of pattern * expression
                    | UnaryOperator of varID * expression
                    | BinaryOperator of varID * expression * expression
                    | IfElse of expression * expression * expression
@@ -295,7 +296,7 @@ struct
                    | Expression of expression
                    | Raw of Token.t
 
-    type t = { ids: (string, varID) Hashtbl.t; values: value Stack.t Vector.t }
+    type t = { ids: (string, int) Hashtbl.t; values: value option Stack.t Vector.t }
 
     let parse tok =
         if tok = [] then failwith "Expression is empty" else
@@ -350,7 +351,7 @@ struct
                                 ("fun", { func = (fun [Expression pat;
                                                        Raw Token.Arrow;
                                                        Expression e] ->
-                                                       Expression (Constant (VFunction (pat, e))));
+                                                       Expression (Lambda (pat, e)));
                                                        argc = 3});
                                 ("let", { func = (fun [Expression pat;
                                                        Raw Token.Equality;
@@ -429,7 +430,7 @@ struct
                 while not (equal !it en) do
                     begin match (get !it.prev).item, !it.item with
                         Some (Expression a), Some (Expression b) ->
-                            !it.item <- Some (Expression (Function (a, b)));
+                            !it.item <- Some (Expression (Call (a, b)));
                             ignore (remove (get !it.prev))
                       | _ -> ()
                     end;
@@ -494,4 +495,49 @@ struct
         fold_expr dl (DList._end dl);
         let open DList in
         get (get dl.next).item
+
+    let bind_ids program statement =
+        let rec bind_pattern (Variable v) =
+            match v with
+                IndexID (id, t) -> Hashtbl.add program.ids t id; Variable v
+              | TextID t -> let id = Vector.length program.values in
+                            Hashtbl.add program.ids t id; Variable (IndexID (id, t))
+            in
+        let rec unbind_pattern (Variable v) =
+            let IndexID (_, t) = v in Hashtbl.remove program.ids t
+            in
+        let get_id id =
+            match id with
+                TextID text -> let nr = try Hashtbl.find program.ids text with _ -> failwith ("Unbound value " ^ text)
+                               in IndexID (nr, text)
+              | _ -> id
+            in
+        let bind_def = List.map (fun (p, e) -> (bind_pattern p, e)) in
+        let unbind_def def = ignore(List.map (fun (p, _) -> unbind_pattern p) def) in
+        let rec go_def def = List.map (fun (p, e) -> (p, go_expr e)) def
+        and go_expr e =
+            match e with
+                  Variable id -> Variable (get_id id)
+                | Call (a, b) -> Call (go_expr a, go_expr b)
+                | Lambda (p, e) -> let p = bind_pattern p in
+                                let e = go_expr e in
+                                unbind_pattern p; Lambda (p, e)
+                | UnaryOperator (id, e) -> UnaryOperator (get_id id, go_expr e)
+                | BinaryOperator (id, a, b) -> BinaryOperator (get_id id, go_expr a, go_expr b)
+                | IfElse (con, a, b) -> IfElse (go_expr con, go_expr a, go_expr b)
+                | LetIn (def, expr) -> let def = bind_def def in
+                                        let def = go_def def in
+                                        let expr = go_expr expr in
+                                        unbind_def def;
+                                        LetIn (def, expr)
+                | _ -> e
+            in
+        let go statement =
+            match statement with
+                Expression e -> Expression (go_expr e)
+              | DefinitionList def -> let def = bind_def def in
+                                      let def = go_def def in
+                                      unbind_def def; DefinitionList def
+              | _ -> failwith "Parsing failed"
+        in go statement
 end
