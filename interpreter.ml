@@ -298,6 +298,8 @@ struct
 
     type t = { ids: (string, int) Hashtbl.t; values: value option Stack.t Vector.t }
 
+    let create () = { ids = Hashtbl.create 50; values = Vector.create (Stack.create ()) }
+
     let parse tok =
         if tok = [] then failwith "Expression is empty" else
         let rec parse_atom tok =
@@ -501,7 +503,9 @@ struct
             match v with
                 IndexID (id, t) -> Hashtbl.add program.ids t id; Variable v
               | TextID t -> let id = Vector.length program.values in
-                            Hashtbl.add program.ids t id; Variable (IndexID (id, t))
+                            Vector.append program.values (Stack.create());
+                            Hashtbl.add program.ids t id; 
+                            Variable (IndexID (id, t))
             in
         let rec unbind_pattern (Variable v) =
             let IndexID (_, t) = v in Hashtbl.remove program.ids t
