@@ -248,7 +248,8 @@ struct
               | Float (_, _)
               | String _
               | Char _
-              | Id _ -> true
+              | Id _
+              | RightBracket -> true
               | _ -> false
             in
         let rec go prev tok =
@@ -279,6 +280,7 @@ struct
                | VBool of bool 
                | VTuple of value array
                | VFunction of pattern * expression
+               | VBuiltin of (value -> value)
     and expression = Constant of value
                    | Variable of varID
                    | Call of expression * expression
