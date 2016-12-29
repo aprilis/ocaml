@@ -93,6 +93,8 @@ module type TokenType =
 sig
     type t = LeftBracket 
             | RightBracket
+            | LeftSBracket
+            | RightSBracket
             | Comma
             | SemiColon
             | Equality
@@ -115,6 +117,8 @@ module Token : TokenType =
 struct
     type t = LeftBracket 
             | RightBracket
+            | LeftSBracket
+            | RightSBracket
             | Comma
             | SemiColon
             | Equality
@@ -136,8 +140,8 @@ struct
                     (Letter, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM_");
                     (Whitespace, " \n\t\r");
                     (Dot, ".");
-                    (Special1, "();,");
-                    (Special2, "@$:~!%^&*-+=[]|<,>/")]
+                    (Special1, "()[];,");
+                    (Special2, "@$:~!%^&*-+=|<,>/")]
 
     let keywords =
         let rec make_hashtbl tbl l =
@@ -146,7 +150,9 @@ struct
         in  make_hashtbl (Hashtbl.create 10) keywords_list
 
     let special1_type c = let specials = [('(', LeftBracket);
-                                          (')', RightBracket); 
+                                          (')', RightBracket);
+                                          ('[', LeftSBracket);
+                                          (']', RightSBracket); 
                                           (';', SemiColon);
                                           (',', Comma)] in
         List.assoc c specials
@@ -249,13 +255,14 @@ struct
               | String _
               | Char _
               | Id _
-              | RightBracket -> true
+              | RightBracket
+              | RightSBracket -> true
               | _ -> false
             in
         let rec go prev tok =
             match tok with
                 [] -> []
-              | Operator x :: t -> (if prev then BinaryOperator x else UnaryOperator x) :: go false t
+              | Operator x :: t -> (if prev then BinaryOperator x else UnaryOperator (x ^ "u")) :: go false t
               | h :: t -> h :: go (expr h) t
         in go false tok
 
@@ -282,8 +289,6 @@ sig
                | VList of value list 
                | VTuple of value list
                | VFunction of pattern * expression
-               | VUnOperator of (value -> value)
-               | VBinOperator of (value -> value -> value)
     and expression = Constant of value
                    | Variable of varID
                    | Call of expression * expression
@@ -303,10 +308,16 @@ sig
                    | RawTuple of expression list
                    | Raw of Token.t
 
-    type t = { ids: (string, int) Hashtbl.t; values: value option Stack.t Vector.t }
+    type t = { ids: (string, int) Hashtbl.t;
+               values: value option Stack.t Vector.t; 
+               bin_ops: (value -> value -> value) Vector.t;
+               un_ops: (value -> value) Vector.t }
 
     val create: unit -> t
     val bind_ids: t -> statement -> statement
+    val add_value: t-> string -> value -> unit
+    val add_bin_operator: t-> string -> (value -> value -> value) -> unit
+    val add_un_operator: t-> string -> (value -> value) -> unit
 end
 
 module Program : ProgramType =
@@ -321,8 +332,6 @@ struct
                | VList of value list 
                | VTuple of value list
                | VFunction of pattern * expression
-               | VUnOperator of (value -> value)
-               | VBinOperator of (value -> value -> value)
     and expression = Constant of value
                    | Variable of varID
                    | Call of expression * expression
@@ -342,11 +351,17 @@ struct
                    | RawTuple of expression list
                    | Raw of Token.t
 
-    type t = { ids: (string, int) Hashtbl.t; values: value option Stack.t Vector.t }
+    type t = { ids: (string, int) Hashtbl.t;
+               values: value option Stack.t Vector.t; 
+               bin_ops: (value -> value -> value) Vector.t;
+               un_ops: (value -> value) Vector.t }
 
-    let create () = { ids = Hashtbl.create 50; values = Vector.create (Stack.create ()) }
+    let create () = { ids = Hashtbl.create 50;
+                      values = Vector.create (Stack.create ());
+                      bin_ops = Vector.create (fun _ _ -> VUnit);
+                      un_ops = Vector.create (fun _ -> VUnit) }
 
-    let bind_ids program statement = (*TODO: tuple*)
+    let bind_ids program statement =
         let rec bind_pattern (Variable v) =
             match v with
                 IndexID (id, t) -> Hashtbl.add program.ids t id; Variable v
@@ -393,6 +408,23 @@ struct
                                       unbind_def def; DefinitionList def
               | _ -> failwith "Parsing failed"
         in go statement
+
+    let add_value program id v =
+        let nr = Vector.length program.values in
+        Hashtbl.add program.ids id nr;
+        Vector.append program.values (Stack.create ());
+        Stack.push (Some v) (Vector.get program.values nr)
+
+    let add_bin_operator program id f =
+        let nr = Vector.length program.bin_ops in
+        Hashtbl.add program.ids id nr;
+        Vector.append program.bin_ops f
+    
+    let add_un_operator program id f =
+        let id = id ^ "u" in
+        let nr = Vector.length program.un_ops in
+        Hashtbl.add program.ids id nr;
+        Vector.append program.un_ops f
 end
 
 module type ParserType =
@@ -413,10 +445,15 @@ struct
             | Token.Char x :: t -> Expression (Constant (VChar x)) :: parse_atom t
             | Token.Id x :: t -> Expression (Variable (TextID x)) :: parse_atom t
             | h :: t -> Raw h :: parse_atom t
+        
+    let rec make_list l =
+        match l with
+            [] -> Constant (VList [])
+          | h::t -> BinaryOperator (TextID "::", h, make_list t)
 
     let rec fold_expr bg en =
         let open DList in
-        if not (equal bg en) && not (equal (get bg.next) (get en.prev)) then
+        if not (equal (get bg.next) en) && not (equal (get bg.next) (get en.prev)) then
         begin
             (* fold after keywords else, in, ->, , *)
             let fold_after = [Token.Keyword "else"; Token.Keyword "in"; Token.Arrow; Token.Comma] in
@@ -432,6 +469,20 @@ struct
 
             (* brackets *)
             let it = ref (get (get bg.next).next) in
+            while not (equal !it en) do
+                begin match (get !it.prev).item, !it.item with
+                    Some (Raw (Token.LeftBracket)), Some (Raw (Token.RightBracket)) ->
+                        ignore (remove (get !it.prev));
+                        !it.item <- Some (Expression (Constant (VUnit)))
+                    | Some (Raw (Token.LeftSBracket)), Some (Raw (Token.RightSBracket)) ->
+                        ignore (remove (get !it.prev));
+                        !it.item <- Some (Expression (Constant (VList [])))
+                    | _ -> ()
+                end;
+                it := get !it.next
+            done;
+
+            let it = ref (get (get bg.next).next) in
             while not (equal !it en) && not (equal !it (get en.prev)) do
                 begin match !it.item, (get !it.prev).item, (get !it.next).item with
                     Some (Expression e), Some (Raw (Token.LeftBracket)), Some (Raw (Token.RightBracket)) ->
@@ -441,6 +492,10 @@ struct
                         ignore (remove (get !it.next));
                         ignore (remove (get !it.prev));
                         !it.item <- Some (Expression (Tuple t))
+                    | Some (RawTuple t), Some (Raw (Token.LeftSBracket)), Some (Raw (Token.RightSBracket)) ->
+                        ignore (remove (get !it.next));
+                        ignore (remove (get !it.prev));
+                        !it.item <- Some (Expression (make_list t))
                     | _ -> ()
                 end;
                 it := get !it.next
@@ -590,9 +645,11 @@ struct
             if not (equal (get bg.next) (get en.prev)) then failwith "Parse error: failed to fold all tokens"*)
         end
 
-    let left_brackets = [Token.LeftBracket; Token.Keyword "if"; Token.Keyword "let"; Token.Keyword "fun"]
+    let left_brackets = [Token.LeftBracket; Token.LeftSBracket; Token.Keyword "if";
+                         Token.Keyword "let"; Token.Keyword "fun"]
     let separators = [Token.Keyword "then"; Token.Keyword "and"; Token.Equality]
-    let right_brackets = [Token.RightBracket; Token.Keyword "else"; Token.Keyword "in"; Token.Arrow]
+    let right_brackets = [Token.RightBracket; Token.RightSBracket;
+                          Token.Keyword "else"; Token.Keyword "in"; Token.Arrow]
     let fold_brackets dl =
         let open DList in
         let it = ref (get dl.next) in
@@ -648,3 +705,97 @@ struct
         fold_expr dl (_end dl);
         fix_fun (get (get dl.next).item)
 end
+
+let init_pervasives program =
+    let open Program in
+    add_value program "true" (VBool true);
+    add_value program "false" (VBool false);
+    add_bin_operator program "+" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a + b)
+          | VFloat a, VFloat b -> VFloat (a +. b)
+          | VString a, VString b -> VString (a ^ b)
+          | VList a, VList b -> VList (a @ b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program "-" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a - b)
+          | VFloat a, VFloat b -> VFloat (a -. b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program "*" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a * b)
+          | VFloat a, VFloat b -> VFloat (a *. b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program "/" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a / b)
+          | VFloat a, VFloat b -> VFloat (a /. b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program "%" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a mod b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program "**" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VFloat (float_of_int a ** float_of_int b)
+          | VFloat a, VFloat b -> VFloat (a ** b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program "/" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a / b)
+          | VFloat a, VFloat b -> VFloat (a /. b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program ">" (fun a b -> VBool (a > b));
+    add_bin_operator program "<" (fun a b -> VBool (a < b));
+    add_bin_operator program ">=" (fun a b -> VBool (a >= b));
+    add_bin_operator program "<=" (fun a b -> VBool (a <= b));
+    add_bin_operator program "==" (fun a b -> VBool (a = b));
+    add_bin_operator program "!=" (fun a b -> VBool (a <> b));
+    add_bin_operator program "||" (fun a b ->
+        match a, b with
+            VBool false, VBool false -> VBool false
+          | VBool _, VBool _ -> VBool true
+          | _ -> failwith "wrong types");
+    add_bin_operator program "&&" (fun a b ->
+        match a, b with
+            VBool true, VBool true -> VBool true
+          | VBool _, VBool _ -> VBool false
+          | _ -> failwith "wrong types");
+    add_bin_operator program "|" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a lor b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program "&" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a land b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program "<<" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a lsl b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program ">>" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a lsr b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program "<<" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a lsl b)
+          | _ -> failwith "wrong types");
+    add_bin_operator program "::" (fun a b ->
+        match a, b with
+            _, VList b -> VList (a :: b)
+          | _ -> failwith "wrong types");
+    add_un_operator program "-" (fun x ->
+        match x with
+            VInt x -> VInt (-x)
+          | VFloat x -> VFloat (-.x)
+          | _ -> failwith "wrong types");
+    add_un_operator program "!" (fun x ->
+        match x with
+            VBool x -> VBool (not x)
+          | _ -> failwith "wrong types");
+    add_un_operator program "~" (fun x ->
+        match x with
+            VInt x -> VInt (lnot x)
+          | _ -> failwith "wrong types")
