@@ -146,7 +146,7 @@ struct
     let keywords =
         let rec make_hashtbl tbl l =
             match l with [] -> tbl | h::t -> Hashtbl.add tbl h h; make_hashtbl tbl t
-        and keywords_list = ["let"; "in"; "and"; "if"; "then"; "else"; "fun"]
+        and keywords_list = ["let"; "in"; "and"; "if"; "then"; "else"; "fun"; "true"; "false"]
         in  make_hashtbl (Hashtbl.create 10) keywords_list
 
     let special1_type c = let specials = [('(', LeftBracket);
@@ -288,7 +288,7 @@ sig
                | VUnit
                | VList of value list 
                | VTuple of value list
-               | VFunction of pattern * expression
+               | VFunction of pattern * expression * ((int, value) Hashtbl.t)
     and expression = Constant of value
                    | Variable of varID
                    | Call of expression * expression
@@ -308,10 +308,7 @@ sig
                    | RawTuple of expression list
                    | Raw of Token.t
 
-    type t = { ids: (string, int) Hashtbl.t;
-               values: value option Stack.t Vector.t; 
-               bin_ops: (value -> value -> value) Vector.t;
-               un_ops: (value -> value) Vector.t }
+    type t
 
     val create: unit -> t
     val bind_ids: t -> statement -> statement
@@ -331,7 +328,7 @@ struct
                | VUnit
                | VList of value list 
                | VTuple of value list
-               | VFunction of pattern * expression
+               | VFunction of pattern * expression * ((int, value) Hashtbl.t)
     and expression = Constant of value
                    | Variable of varID
                    | Call of expression * expression
@@ -443,6 +440,8 @@ struct
             | Token.Float (x, y) :: t -> Expression (Constant (VFloat x)) :: parse_atom t
             | Token.String x :: t -> Expression (Constant (VString x)) :: parse_atom t
             | Token.Char x :: t -> Expression (Constant (VChar x)) :: parse_atom t
+            | Token.Keyword "true" :: t -> Expression (Constant (VBool true)) :: parse_atom t
+            | Token.Keyword "false" :: t -> Expression (Constant (VBool false)) :: parse_atom t
             | Token.Id x :: t -> Expression (Variable (TextID x)) :: parse_atom t
             | h :: t -> Raw h :: parse_atom t
         
@@ -640,9 +639,9 @@ struct
                     | _ -> ()
                 end;
                 it := get !it.next
-            done(*;
+            done;
 
-            if not (equal (get bg.next) (get en.prev)) then failwith "Parse error: failed to fold all tokens"*)
+            if not (equal (get bg.next) (get en.prev)) then failwith "Parse error: failed to fold all tokens"
         end
 
     let left_brackets = [Token.LeftBracket; Token.LeftSBracket; Token.Keyword "if";
@@ -706,10 +705,8 @@ struct
         fix_fun (get (get dl.next).item)
 end
 
-let init_pervasives program =
+let init_operators program =
     let open Program in
-    add_value program "true" (VBool true);
-    add_value program "false" (VBool false);
     add_bin_operator program "+" (fun a b ->
         match a, b with
             VInt a, VInt b -> VInt (a + b)
