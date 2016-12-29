@@ -307,7 +307,7 @@ sig
 
     val create: unit -> t
     val parse: Token.t list -> statement
-    val bind_ids: statement -> statement
+    val bind_ids: t -> statement -> statement
 end
 
 module Program : ProgramType =
