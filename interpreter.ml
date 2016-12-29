@@ -270,21 +270,25 @@ struct
         classify_operators (parse text_parsed)
 end
 
-module Program =
-struct
+module type ProgramType =
+sig
     type varID = TextID of string | IndexID of int * string
     type value = VInt of int 
                | VFloat of float 
                | VString of string 
                | VChar of char
-               | VBool of bool 
-               | VTuple of value array
+               | VBool of bool
+               | VUnit
+               | VList of value list 
+               | VTuple of value list
                | VFunction of pattern * expression
-               | VBuiltin of (value -> value)
+               | VUnOperator of (value -> value)
+               | VBinOperator of (value -> value -> value)
     and expression = Constant of value
                    | Variable of varID
                    | Call of expression * expression
                    | Lambda of pattern * expression
+                   | Tuple of expression list
                    | UnaryOperator of varID * expression
                    | BinaryOperator of varID * expression * expression
                    | IfElse of expression * expression * expression
@@ -296,6 +300,47 @@ struct
     type statement = Definition of definition
                    | DefinitionList of definition_list
                    | Expression of expression
+                   | RawTuple of expression list
+                   | Raw of Token.t
+
+    type t = { ids: (string, int) Hashtbl.t; values: value option Stack.t Vector.t }
+
+    val create: unit -> t
+    val parse: Token.t list -> statement
+    val bind_ids: statement -> statement
+end
+
+module Program : ProgramType =
+struct
+    type varID = TextID of string | IndexID of int * string
+    type value = VInt of int 
+               | VFloat of float 
+               | VString of string 
+               | VChar of char
+               | VBool of bool
+               | VUnit
+               | VList of value list 
+               | VTuple of value list
+               | VFunction of pattern * expression
+               | VUnOperator of (value -> value)
+               | VBinOperator of (value -> value -> value)
+    and expression = Constant of value
+                   | Variable of varID
+                   | Call of expression * expression
+                   | Lambda of pattern * expression
+                   | Tuple of expression list
+                   | UnaryOperator of varID * expression
+                   | BinaryOperator of varID * expression * expression
+                   | IfElse of expression * expression * expression
+                   | LetIn of definition_list * expression
+    and definition = pattern * expression
+    and definition_list = definition list
+    and pattern = expression
+    
+    type statement = Definition of definition
+                   | DefinitionList of definition_list
+                   | Expression of expression
+                   | RawTuple of expression list
                    | Raw of Token.t
 
     type t = { ids: (string, int) Hashtbl.t; values: value option Stack.t Vector.t }
@@ -318,8 +363,8 @@ struct
             let open DList in
             if not (equal bg en) && not (equal (get bg.next) (get en.prev)) then
             begin
-                (* fold after keywords else, in, -> *)
-                let fold_after = [Token.Keyword "else"; Token.Keyword "in"; Token.Arrow] in
+                (* fold after keywords else, in, ->, , *)
+                let fold_after = [Token.Keyword "else"; Token.Keyword "in"; Token.Arrow; Token.Comma] in
                 let it = ref (get bg.next) in
                 while not (equal !it en) do
                     begin match !it.item with
@@ -337,6 +382,10 @@ struct
                         Some (Expression e), Some (Raw (Token.LeftBracket)), Some (Raw (Token.RightBracket)) ->
                             ignore (remove (get !it.next));
                             ignore (remove (get !it.prev))
+                      | Some (RawTuple t), Some (Raw (Token.LeftBracket)), Some (Raw (Token.RightBracket)) ->
+                            ignore (remove (get !it.next));
+                            ignore (remove (get !it.prev));
+                            !it.item <- Some (Expression (Tuple t))
                       | _ -> ()
                     end;
                     it := get !it.next
@@ -467,11 +516,29 @@ struct
                 fold_bin (list_filter ["||";"&&"]);
                 fold_bin (list_filter ["::"]);
                 fold_bin (fun _ -> true);
-                if not (equal (get bg.next) (get en.prev)) then failwith "Parse error: failed to fold all tokens"
+
+                (*commas*)
+                let it = ref (get (get bg.next).next) in
+                while not (equal !it en) && not (equal !it (get en.prev)) do
+                    begin match !it.item, (get !it.prev).item, (get !it.next).item with
+                        Some (Raw (Token.Comma)), Some (Expression a), Some (Expression b) ->
+                            ignore (remove (get !it.next));
+                            ignore (remove (get !it.prev));
+                            !it.item <- Some (RawTuple ([a; b]))
+                      | Some (Raw (Token.Comma)), Some (Expression a), Some (RawTuple b)->
+                            ignore (remove (get !it.next));
+                            ignore (remove (get !it.prev));
+                            !it.item <- Some (RawTuple (a::b))
+                      | _ -> ()
+                    end;
+                    it := get !it.next
+                done(*;
+
+                if not (equal (get bg.next) (get en.prev)) then failwith "Parse error: failed to fold all tokens"*)
             end
             in
         let left_brackets = [Token.LeftBracket; Token.Keyword "if"; Token.Keyword "let"; Token.Keyword "fun"]
-        and separators = [Token.Comma; Token.Keyword "then"; Token.Keyword "and"; Token.Equality]
+        and separators = [Token.Keyword "then"; Token.Keyword "and"; Token.Equality]
         and right_brackets = [Token.RightBracket; Token.Keyword "else"; Token.Keyword "in"; Token.Arrow] in
         let fold_brackets dl =
             let open DList in
@@ -494,13 +561,39 @@ struct
                 ignore (fold_expr (Stack.pop st) !it)
             done
             in
+        let rec fix_fun statement =
+            let rec go pat f =
+                match pat with
+                    Call(p, e) -> go p (Lambda (e, f))
+                  | _ -> (pat, f)
+                in
+            let rec go_expr e =
+                match e with
+                    Call (a, b) -> Call (go_expr a, go_expr b)
+                  | Lambda (a, b) -> Lambda (a, go_expr b)
+                  | Tuple t -> Tuple (List.map go_expr t)
+                  | UnaryOperator (id, e) -> UnaryOperator (id, go_expr e)
+                  | BinaryOperator (id, a, b) -> BinaryOperator (id, go_expr a, go_expr b)
+                  | IfElse (a, b, c) -> IfElse (go_expr a, go_expr b, go_expr c)
+                  | LetIn (def, e) ->
+                        let DefinitionList def = fix_fun (DefinitionList def) in
+                        LetIn (def, go_expr e)
+                  | _ -> e
+                in
+            match statement with
+                DefinitionList [] -> DefinitionList []
+              | DefinitionList ((p, e)::t) -> let DefinitionList t = fix_fun (DefinitionList t) in
+                                              DefinitionList (go p e :: t)
+              | Expression e -> Expression (go_expr e)
+              | _ -> statement
+            in
         let dl = DList.of_list (parse_atom tok) in
         fold_brackets dl;
         fold_expr dl (DList._end dl);
         let open DList in
-        get (get dl.next).item
+        fix_fun (get (get dl.next).item)
 
-    let bind_ids program statement =
+    let bind_ids program statement = (*TODO: tuple*)
         let rec bind_pattern (Variable v) =
             match v with
                 IndexID (id, t) -> Hashtbl.add program.ids t id; Variable v
@@ -528,6 +621,7 @@ struct
                 | Lambda (p, e) -> let p = bind_pattern p in
                                 let e = go_expr e in
                                 unbind_pattern p; Lambda (p, e)
+                | Tuple t -> Tuple (List.map go_expr t)
                 | UnaryOperator (id, e) -> UnaryOperator (get_id id, go_expr e)
                 | BinaryOperator (id, a, b) -> BinaryOperator (get_id id, go_expr a, go_expr b)
                 | IfElse (con, a, b) -> IfElse (go_expr con, go_expr a, go_expr b)
