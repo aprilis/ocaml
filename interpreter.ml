@@ -288,7 +288,7 @@ sig
                | VUnit
                | VList of value list 
                | VTuple of value list
-               | VFunction of pattern * expression * ((int, value) Hashtbl.t)
+               | VFunction of pattern * expression
     and expression = Constant of value
                    | Variable of varID
                    | Call of expression * expression
@@ -328,7 +328,7 @@ struct
                | VUnit
                | VList of value list 
                | VTuple of value list
-               | VFunction of pattern * expression * ((int, value) Hashtbl.t)
+               | VFunction of pattern * expression
     and expression = Constant of value
                    | Variable of varID
                    | Call of expression * expression
