@@ -279,7 +279,7 @@ end
 
 module type ProgramType =
 sig
-    type varID = TextID of string | IndexID of int * string
+    type varID = TextID of string | GlobalID of int | LocalID of int | PatternID of int * string
     type value = VInt of int 
                | VFloat of float 
                | VString of string 
@@ -293,6 +293,7 @@ sig
                    | Variable of varID
                    | Call of expression * expression
                    | Lambda of pattern * expression
+                   | LambdaFV of pattern * expression * varID array
                    | Tuple of expression list
                    | UnaryOperator of varID * expression
                    | BinaryOperator of varID * expression * expression
@@ -319,7 +320,7 @@ end
 
 module Program : ProgramType =
 struct
-    type varID = TextID of string | IndexID of int * string
+    type varID = TextID of string | GlobalID of int | LocalID of int | PatternID of int * string
     type value = VInt of int 
                | VFloat of float 
                | VString of string 
@@ -333,6 +334,7 @@ struct
                    | Variable of varID
                    | Call of expression * expression
                    | Lambda of pattern * expression
+                   | LambdaFV of pattern * expression * varID array
                    | Tuple of expression list
                    | UnaryOperator of varID * expression
                    | BinaryOperator of varID * expression * expression
@@ -358,22 +360,102 @@ struct
                       bin_ops = Vector.create (fun _ _ -> VUnit);
                       un_ops = Vector.create (fun _ -> VUnit) }
 
-    let bind_ids program statement =
-        let rec bind_pattern (Variable v) =
-            match v with
-                IndexID (id, t) -> Hashtbl.add program.ids t id; Variable v
-              | TextID t -> let id = Vector.length program.values in
-                            Vector.append program.values (Stack.create());
-                            Hashtbl.add program.ids t id; 
-                            Variable (IndexID (id, t))
+    let find_free_variables statement =
+        let (module M) = (module Set.Make(Int32) : Set.S with type elt = int32) in
+        let i32 = Int32.of_int in
+        let union_list = List.fold_left M.union M.empty in
+        let rec go_expr e =
+            match e with
+                Variable (GlobalID id) -> (e, M.singleton (i32 id))
+              | Lambda (p, e) -> let fp = go_pat p and (e, fe) = go_expr e in
+                                 let fv = M.diff fe fp in
+                                 (LambdaFV (p, e, fv |> M.elements |> List.map (fun x -> GlobalID (Int32.to_int x))
+                                  |> Array.of_list), fv)
+              | Call (a, b) -> let (a, fa) = go_expr a and (b, fb) = go_expr b in
+                                           (Call (a, b), M.union fa fb)
+              | Tuple t -> let l = List.map go_expr t in (Tuple (List.map (fun (x, _) -> x) l),
+                                                          List.map (fun (_, x) -> x) l |> union_list)
+              | UnaryOperator (id, x) -> let (x, fx) = go_expr x in (UnaryOperator (id, x), fx)
+              | BinaryOperator (id, a, b) -> let (a, fa) = go_expr a and (b, fb) = go_expr b in
+                                            (BinaryOperator (id, a, b), M.union fa fb)
+              | IfElse (con, a, b) -> let (con, fc) = go_expr con and (a, fa) = go_expr a and (b, fb) = go_expr b in
+                                            (IfElse (con, a, b), M.union (M.union fa fb) fc)
+              | LetIn (def, expr) -> let (def, fp, fv) = go_def def and (expr, fe) = go_expr expr in
+                                     (LetIn (def, expr), M.diff fp (M.union fe fv))
+              | _ -> (e, M.empty)
+        and go_pat pat =
+            match pat with
+                Variable (PatternID (id, _)) -> M.singleton (i32 id)
+              | Tuple t -> t |> List.map go_pat |> union_list
+              | BinaryOperator (_, a, b) -> M.union (go_pat a) (go_pat b)
+              | _ -> failwith "Wrong pattern"
+        and go_def def =
+            let (p, e) = List.split def in
+            let fp = p |> List.map go_pat |> union_list in
+            let (e, fe) = e |> List.map go_expr |> List.split in
+            (List.combine p e, fp, union_list fe)
             in
-        let rec unbind_pattern (Variable v) =
-            let IndexID (_, t) = v in Hashtbl.remove program.ids t
+                    
+        match statement with
+            Expression e -> let (e, _) = go_expr e in Expression e
+          | DefinitionList def -> let (def, _, _) = go_def def in DefinitionList def
+          | _ -> failwith "Parsing failed"
+
+    let fix_local_ids statement =
+        let get_id tbl vid =
+            match vid with
+                GlobalID id -> (try let local = Hashtbl.find tbl id in LocalID local
+                                with Not_found -> vid)
+            | _ -> vid
+            in
+        let rec go_expr tbl e = (*TODO: lambda*)
+            match e with
+                Variable v -> Variable (get_id tbl v)
+              | LambdaFV (p, e, fv) ->
+                    let nfv = Array.map (get_id tbl) fv in
+                    let ntbl = Hashtbl.create (Array.length fv) in
+                    ignore (Array.mapi (fun i (GlobalID id) -> Hashtbl.add ntbl id i) fv);
+                    LambdaFV (p, go_expr ntbl e, nfv)
+              | Call (a, b) -> Call (go_expr tbl a, go_expr tbl b)
+              | Tuple t -> Tuple (List.map (go_expr tbl) t)
+              | UnaryOperator (id, x) -> UnaryOperator (id, go_expr tbl x)
+              | BinaryOperator (id, a, b) -> BinaryOperator (id, go_expr tbl a, go_expr tbl b)
+              | IfElse (con, a, b) -> IfElse (go_expr tbl con, go_expr tbl a, go_expr tbl b)
+              | LetIn (def, expr) -> LetIn (go_def tbl def, go_expr tbl expr)
+              | _ -> e
+        and go_def tbl def = List.map (fun (p, e) -> (p, go_expr tbl e)) def in
+        let tbl = Hashtbl.create 10 in
+        match statement with
+            Expression e -> Expression (go_expr tbl e)
+          | DefinitionList def -> DefinitionList (go_def tbl def)
+          | _ -> failwith "Parsing failed"
+
+    let bind_ids program statement =
+        let rec bind_pattern pat =
+            match pat with
+                Variable v ->
+                    begin match v with
+                        PatternID (id, t) -> Hashtbl.add program.ids t id; Variable v
+                      | TextID t -> let id = Vector.length program.values in
+                                    Vector.append program.values (Stack.create());
+                                    Hashtbl.add program.ids t id; 
+                                    Variable (PatternID (id, t))
+                    end
+              | Tuple t -> Tuple (List.map bind_pattern t)
+              | BinaryOperator (id, a, b) -> BinaryOperator (id, bind_pattern a, bind_pattern b)
+              | _ -> failwith "Wrong pattern"
+            in
+        let rec unbind_pattern pat =
+            match pat with
+                Variable (PatternID (_, t)) -> Hashtbl.remove program.ids t
+              | Tuple t -> ignore (List.map unbind_pattern t)
+              | BinaryOperator (_, a, b) -> unbind_pattern a; unbind_pattern b
+              | _ -> failwith "Wrong pattern"
             in
         let get_id id =
             match id with
                 TextID text -> let nr = try Hashtbl.find program.ids text with _ -> failwith ("Unbound value " ^ text)
-                               in IndexID (nr, text)
+                               in GlobalID nr
               | _ -> id
             in
         let bind_def = List.map (fun (p, e) -> (bind_pattern p, e)) in
@@ -397,14 +479,14 @@ struct
                                         LetIn (def, expr)
                 | _ -> e
             in
-        let go statement =
-            match statement with
-                Expression e -> Expression (go_expr e)
-              | DefinitionList def -> let def = bind_def def in
-                                      let def = go_def def in
-                                      unbind_def def; DefinitionList def
-              | _ -> failwith "Parsing failed"
-        in go statement
+        (match statement with
+              Expression e -> Expression (go_expr e)
+            | DefinitionList def -> let def = bind_def def in
+                                    let def = go_def def in
+                                    unbind_def def; DefinitionList def
+            | _ -> failwith "Parsing failed")
+        |> find_free_variables
+        |> fix_local_ids
 
     let add_value program id v =
         let nr = Vector.length program.values in
@@ -692,7 +774,7 @@ struct
         match statement with
             DefinitionList [] -> DefinitionList []
             | DefinitionList ((p, e)::t) -> let DefinitionList t = fix_fun (DefinitionList t) in
-                                            DefinitionList (go p e :: t)
+                                            DefinitionList (go p (go_expr e) :: t)
             | Expression e -> Expression (go_expr e)
             | _ -> statement
 
