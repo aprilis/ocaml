@@ -917,10 +917,15 @@ struct
         done
 
     let rec fix_fun statement =
+        let rec check pat =
+            match pat with
+                Constant _ | Variable _ | Tuple _ | BinaryOperator (TextID "::", _, _) -> ()
+              | _ -> failwith "invalid pattern"
+            in
         let rec go pat f =
             match pat with
                 Call(p, e) -> go p (Lambda (e, f))
-                | _ -> (pat, f)
+              | _ -> check pat; (pat, f)
             in
         let rec go_expr e =
             match e with
