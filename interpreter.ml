@@ -7,6 +7,7 @@ sig
     val create: 'a -> 'a t
     val length: 'a t -> int
     val append: 'a t -> 'a -> unit
+    val pop: 'a t -> unit
     val get: 'a t -> int -> 'a
     val set: 'a t -> int -> 'a -> unit
 end
@@ -28,6 +29,10 @@ struct
         if vec.len = Array.length vec.arr then reserve vec (vec.len * 2);
         Array.set vec.arr vec.len a;
         vec.len <- vec.len + 1
+    
+    let pop vec =
+        vec.len <- vec.len - 1;
+        Array.set vec.arr vec.len vec.default
 
     let get vec n = 
         if n >= vec.len 
@@ -110,6 +115,8 @@ sig
             | Id of string
             | Raw of char list
 
+    exception Err of string
+
     val get_tokens: string -> t list
 end
 
@@ -134,7 +141,11 @@ struct
             | Id of string
             | Raw of char list
 
+    exception Err of string
+
     type character = Digit | Letter | Whitespace | Dot | Special1 | Special2
+
+    let failwith str = raise (Err str)
 
     let characters = [(Digit, "0123456789");
                     (Letter, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM_");
@@ -160,7 +171,7 @@ struct
     let char_type c =
         try (let (result, _) =
             List.find (function (_, str) -> String.contains str c) characters in result)
-        with Not_found -> failwith ("Invalid_character: " ^ (string_of_char c))
+        with Not_found -> failwith ("invalid_character: " ^ (string_of_char c))
 
     let parse_text tokens =
         let special = [('n', '\n');('t', '\t');('\\', '\\')] in
@@ -171,18 +182,18 @@ struct
                 match str with
                     '\\'::c::t -> 
                         (try Buffer.add_char buf (List.assoc c special_string); go t
-                        with Not_found -> failwith "Syntax error: wrong letter after backslash")
+                        with Not_found -> failwith "wrong letter after backslash")
                 | '"'::t -> t
                 | c::t -> Buffer.add_char buf c; go t
-                | _ -> failwith "Syntax error"
+                | _ -> failwith "expected \""
                 in
             let tail = go str in (Buffer.contents buf, tail) in
         let get_char str =
             match str with
                 '\\'::c::'\''::t -> (try (List.assoc c special_char, t)
-                    with Not_found -> failwith "Syntax error: wrong letter after backslash")
+                    with Not_found -> failwith "wrong letter after backslash")
                 | c::'\''::t when c <> '\\' -> (c, t)
-                | _ -> failwith "Syntax error"
+                | _ -> failwith "expected \'"
             in
         let rec parse_raw str =
             match str with
@@ -238,7 +249,7 @@ struct
                         (Float(x +. float_of_int (char_to_int h) *. m /. 10.0, m /. 10.0))) t
                     | Some (Id x), Letter -> parse_raw (Some (Id (x ^ string_of_char h))) t
                     | Some (Id x), Digit -> parse_raw (Some (Id (x ^ string_of_char h))) t
-                    | _ -> failwith ("Syntax error: invalid token in " ^ string_of_chars str)
+                    | _ -> failwith ("invalid token in " ^ string_of_chars str)
             in
         let rec go tok =
             match tok with
@@ -311,12 +322,18 @@ sig
 
     type t
 
+    exception RuntimeErr of string
+    exception InternalErr of string
+
     val create: unit -> t
     val bind_ids: t -> statement -> statement
     val eval: t -> expression -> value
+    val feed: t -> definition_list -> (string * value) list
     val add_value: t-> string -> value -> unit
-    val add_bin_operator: t-> string -> (value -> value -> value) -> unit
-    val add_un_operator: t-> string -> (value -> value) -> unit
+    val add_bin_operator: t -> string -> (value -> value -> value) -> unit
+    val add_un_operator: t -> string -> (value -> value) -> unit
+    val backup: t -> int
+    val restore: t -> int -> unit
 end
 
 module Program : ProgramType =
@@ -355,6 +372,14 @@ struct
                values: value option ref Stack.t Vector.t; 
                bin_ops: (value -> value -> value) Vector.t;
                un_ops: (value -> value) Vector.t }
+
+    exception RuntimeErr of string
+    exception BindErr of string
+    exception InternalErr of string
+
+    let fail_runtime str = raise (InternalErr str)
+    let fail_bind str = raise (BindErr str)
+    let fail_internal str = raise (RuntimeErr str)
 
     let create () = { ids = Hashtbl.create 50;
                       values = Vector.create (Stack.create ());
@@ -400,7 +425,7 @@ struct
         match statement with
             Expression e -> let (e, _) = go_expr e in Expression e
           | DefinitionList def -> let (def, _, _) = go_def def in DefinitionList def
-          | _ -> failwith "Parsing failed"
+          | _ -> fail_internal "find_free_variables"
 
     let fix_local_ids statement =
         let get_id tbl vid =
@@ -409,7 +434,7 @@ struct
                                 with Not_found -> vid)
             | _ -> vid
             in
-        let rec go_expr tbl e = (*TODO: lambda*)
+        let rec go_expr tbl e =
             match e with
                 Variable v -> Variable (get_id tbl v)
               | LambdaFV (p, e, fv) ->
@@ -429,7 +454,7 @@ struct
         match statement with
             Expression e -> Expression (go_expr tbl e)
           | DefinitionList def -> DefinitionList (go_def tbl def)
-          | _ -> failwith "Parsing failed"
+          | _ -> fail_internal "fix_local_ids"
 
     let bind_ids program statement =
         let rec bind_pattern pat =
@@ -458,12 +483,12 @@ struct
             in
         let get_id id =
             match id with
-                TextID text -> let nr = try Hashtbl.find program.ids text with _ -> failwith ("Unbound value " ^ text)
+                TextID text -> let nr = try Hashtbl.find program.ids text with _ -> fail_bind text
                                in GlobalID nr
               | _ -> id
             in
         let bind_def = List.map (fun (p, e) -> (bind_pattern p, e)) in
-        let unbind_def def = ignore(List.map (fun (p, _) -> unbind_pattern p) def) in
+        let unbind_def def = List.iter (fun (p, _) -> unbind_pattern p) def in
         let rec go_def def = List.map (fun (p, e) -> (p, go_expr e)) def
         and go_expr e =
             match e with
@@ -488,46 +513,67 @@ struct
             | DefinitionList def -> let def = bind_def def in
                                     let def = go_def def in
                                     unbind_def def; DefinitionList def
-            | _ -> failwith "Parsing failed")
+            | _ -> fail_internal "bind_ids")
         |> find_free_variables
         |> fix_local_ids
 
     let rec push_pattern program pat =
         match pat with
-            Variable (PatternID (id, _)) -> print_endline ("push " ^ string_of_int id); Vector.get program.values id |> Stack.push (ref None)
+            Variable (PatternID (id, _)) -> Vector.get program.values id |> Stack.push (ref None)
           | Variable (JokerID) -> ()
-          | Tuple t -> ignore (List.map (push_pattern program) t)
+          | Tuple t -> List.iter (push_pattern program) t
           | BinaryOperator (_, a, b) -> push_pattern program a; push_pattern program b
           | _ -> ()
 
     let rec pop_pattern program pat =
         match pat with
-            Variable (PatternID (id, _)) -> print_endline ("pop " ^ string_of_int id); ignore(Vector.get program.values id |> Stack.pop)
-          | Tuple t -> ignore (List.map (pop_pattern program) t)
+            Variable (PatternID (id, _)) -> ignore(Vector.get program.values id |> Stack.pop)
+          | Tuple t -> List.iter (pop_pattern program) t
           | BinaryOperator (_, a, b) -> pop_pattern program a; pop_pattern program b
           | _ -> ()
 
-    let rec assign_pattern program pat value =
+    let rec get_variables pat =
+        match pat with
+            Variable (PatternID (a, b)) -> [PatternID (a, b)]
+          | Tuple t -> List.map get_variables t |> List.flatten
+          | BinaryOperator (_, a, b) -> get_variables a @ get_variables b
+          | _ -> []
+          
+    let rec check_pattern pat value =
         match pat, value with
-            Variable (PatternID (id, _)), _ -> print_endline ("assign " ^ string_of_int id); (Vector.get program.values id |> Stack.top) := Some value
-          | Variable (JokerID), _ -> ()
-          | Tuple t, VTuple v -> ignore (List.combine t v |> List.map (fun (a, b) -> assign_pattern program a b))
-          | BinaryOperator (TextID "::", v, t), VList (vh::vt) ->
-                assign_pattern program v vh;
-                assign_pattern program t (VList vt)
-          | Constant c, _ when c = value -> ()
-          | _ -> failwith "Pattern matching failed"
+            Tuple t, VTuple v when List.length t = List.length v ->
+                List.fold_left2 (fun x y z -> x && (check_pattern y z)) true t v
+          | Constant c, _ when c = value -> true
+          | BinaryOperator (TextID "::", h, t), VList (vh::vt) -> check_pattern h vh && check_pattern t (VList vt)
+          | Variable _, _ -> true
+          | _ -> false
+
+    let assign_pattern program pat value =
+        let rec go pat value =
+            match pat, value with
+                Variable (PatternID (id, _)), _ -> (Vector.get program.values id |> Stack.top) := Some value
+              | Tuple t, VTuple v -> List.iter2 go t v
+              | BinaryOperator (TextID "::", v, t), VList (vh::vt) ->
+                    go v vh;
+                    go t (VList vt)
+              | _ -> ()
+            in
+        go pat value
+    
+    let try_assign_pattern program pat value =
+        if check_pattern pat value then assign_pattern program pat value else fail_runtime "pattern matching failed"
 
     let eval program e =
         let get_value_ref local id =
             match id with
                 GlobalID id -> Stack.top (Vector.get program.values id)
               | LocalID id -> local.(id)
+              | _ -> fail_internal "get_value_ref"
             in
         let get_value local id =
             match !(get_value_ref local id) with
                 Some x -> x
-              | None -> failwith "Trying to access value of uninitialised variable"
+              | None -> fail_runtime "trying to access value of uninitialised variable"
             in
         let rec go local expr =
             match expr with
@@ -539,34 +585,43 @@ struct
                     match go local f with
                         VFunction (pat, body, loc) ->
                             push_pattern program pat;
-                            assign_pattern program pat arg;
+                            try_assign_pattern program pat arg;
                             let result = go loc body in
                             pop_pattern program pat;
                             result
-                      | _ -> failwith "Type error: expected function"
+                      | _ -> fail_runtime "type error: expected function"
                 end
               | Tuple t -> VTuple (List.map (go local) t)
               | LambdaFV (pat, body, loc) -> VFunction (pat, body, Array.map (get_value_ref local) loc)
               | UnaryOperator ((GlobalID id), x) -> let f = Vector.get program.un_ops id in f (go local x)
               | BinaryOperator ((GlobalID id), a, b) -> let f = Vector.get program.bin_ops id in 
-                                                        f (go local a) (go local b)
+                                                        (try f (go local a) (go local b) with _ ->
+                                                             fail_runtime "type error: wrong type for operator")
               | IfElse (con, a, b) ->
                 begin
                     match go local con with
                         VBool true -> go local a
                       | VBool false -> go local b
-                      | _ -> failwith "Type error: expected bool in if clausule"
+                      | _ -> fail_runtime "type error: expected bool in if clausule"
                 end
               | LetIn (def, expr) ->
                     let pats, _ = List.split def in
-                    ignore (List.map (push_pattern program) pats);
-                    ignore (List.rev def |> List.map (fun (p, v) -> assign_pattern program p (go local v)));
+                    List.iter (push_pattern program) pats;
+                    List.rev def |> List.iter (fun (p, v) -> try_assign_pattern program p (go local v));
                     let res = go local expr in
-                    ignore (List.map (pop_pattern program) pats);
+                    List.iter (pop_pattern program) pats;
                     res
-              | _ -> failwith "Internal error: wrong pattern"
+              | _ -> fail_internal "eval"
             in
         go [||] e
+
+    let feed program def =
+        let pats, _ = List.split def in
+        List.iter (push_pattern program) pats;
+        List.rev def |> List.iter (fun (p, v) -> try_assign_pattern program p (eval program v));
+        let get_value id = let Some x = !(Vector.get program.values id |> Stack.top) in x in
+        List.map get_variables pats |> List.flatten |> 
+            List.map (fun (PatternID (id, name)) -> Hashtbl.add program.ids name id; (name, get_value id))
 
     let add_value program id v =
         let nr = Vector.length program.values in
@@ -584,16 +639,27 @@ struct
         let nr = Vector.length program.un_ops in
         Hashtbl.add program.ids id nr;
         Vector.append program.un_ops f
+        
+    let backup program = Vector.length program.values
+    let restore program nr =
+        Hashtbl.iter (fun a b -> if b >= nr then Hashtbl.remove program.ids a) program.ids;
+        while Vector.length program.values > nr do
+            Vector.pop program.values
+        done
 end
 
 module type ParserType =
 sig
+    exception Err of string
     val parse: Token.t list -> Program.statement
 end
 
 module Parser : ParserType =
 struct
     open Program
+
+    exception Err of string
+    let failwith str = raise (Err str)
 
     let rec parse_atom tok =
         match tok with
@@ -696,12 +762,12 @@ struct
                         begin try let comp = List.assoc key comps in
                             let rec cut_n it n =
                                 if n = 0 then []
-                                else if equal it en then failwith "Parse error: unexpected end of expression"
+                                else if equal it en then failwith "unexpected end of expression"
                                 else let ret = get it.item :: cut_n (get it.next) (n-1) in
                                         remove it; ret
                             in let l = cut_n (get !it.next) comp.argc
                             in !it.item <- Some (comp.func l)
-                        with Not_found -> () | _ -> failwith "Parse error: syntax error"
+                        with Not_found -> () | _ -> failwith "syntax error"
                         end
                     | _ -> ()
                 end;
@@ -821,7 +887,7 @@ struct
                 it := get !it.next
             done;
 
-            if not (equal (get bg.next) (get en.prev)) then failwith "Parse error: failed to fold all tokens"
+            if not (equal (get bg.next) (get en.prev)) then failwith "syntax error"
         end
 
     let left_brackets = [Token.LeftBracket; Token.LeftSBracket; Token.Keyword "if";
@@ -837,7 +903,7 @@ struct
             begin match !it.item with
                 Some (Raw x) ->
                     if List.mem x separators || List.mem x right_brackets then begin
-                        let prev = try Stack.pop st with Stack.Empty -> failwith "Parse error: unmatched token" in 
+                        let prev = try Stack.pop st with Stack.Empty -> failwith "syntax error" in 
                         ignore (fold_expr prev !it)
                     end;
                     if List.mem x separators || List.mem x left_brackets then
@@ -874,10 +940,10 @@ struct
             | DefinitionList ((p, e)::t) -> let DefinitionList t = fix_fun (DefinitionList t) in
                                             DefinitionList (go p (go_expr e) :: t)
             | Expression e -> Expression (go_expr e)
-            | _ -> statement
+            | _ -> failwith "syntax error"
 
     let parse tok =
-        if tok = [] then failwith "Expression is empty" else
+        if tok = [] then failwith "empty expression" else
         let open DList in
         let dl = of_list (parse_atom tok) in
         fold_brackets dl;
@@ -906,22 +972,17 @@ let init_operators program =
           | _ -> failwith "wrong types");
     add_bin_operator program "/" (fun a b ->
         match a, b with
-            VInt a, VInt b -> VInt (a / b)
+            VInt a, VInt b when b <> 0 -> VInt (a / b)
           | VFloat a, VFloat b -> VFloat (a /. b)
           | _ -> failwith "wrong types");
     add_bin_operator program "%" (fun a b ->
         match a, b with
-            VInt a, VInt b -> VInt (a mod b)
+            VInt a, VInt b when b <> 0 -> VInt (a mod b)
           | _ -> failwith "wrong types");
     add_bin_operator program "**" (fun a b ->
         match a, b with
             VInt a, VInt b -> VFloat (float_of_int a ** float_of_int b)
           | VFloat a, VFloat b -> VFloat (a ** b)
-          | _ -> failwith "wrong types");
-    add_bin_operator program "/" (fun a b ->
-        match a, b with
-            VInt a, VInt b -> VInt (a / b)
-          | VFloat a, VFloat b -> VFloat (a /. b)
           | _ -> failwith "wrong types");
     add_bin_operator program ">" (fun a b -> VBool (a > b));
     add_bin_operator program "<" (fun a b -> VBool (a < b));

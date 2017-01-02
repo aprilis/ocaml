@@ -1,6 +1,6 @@
 #use "interpreter.ml";;
 (*let code = "let rev l = let go l r = if l == [] then r else let h::t = l in go t (h::r) in go l [] in rev [1,2,3]"*)
-let code = "let map f l = if l == [] then [] else let h::t = l in f h :: map f t in map (fun x -> x * x) [2, 1.5, -3]"
+let code = "let map f l = if l == [] then [] else let h::t = l in f h :: map f t in let f = map fun x -> x * x in f [1, 2, 3.5]"
 (*let code = "let x = 10 and y = x * x in if y >= 100 then \"ok\" else \"not ok\""*)
 (*let code = "let f a b c = a + b * c"*)
 (*let code = "let f a b = (a * 5 - 2, b + 3, [a+3, b], (a), (), [], true)"*)
@@ -11,4 +11,5 @@ let parsed = Parser.parse tok;;
 let program = Program.create();;
 init_operators program;;
 let bound = Program.bind_ids program parsed;;
-let result = let Program.Expression e = bound in Program.eval program e;;
+try let Program.Expression e = bound in Program.eval program e with _ -> Program.VUnit;;
+try let Program.DefinitionList def = bound in Program.feed program def with _ -> [];;
