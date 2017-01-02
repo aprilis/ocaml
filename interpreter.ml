@@ -279,7 +279,7 @@ end
 
 module type ProgramType =
 sig
-    type varID = TextID of string | GlobalID of int | LocalID of int | PatternID of int * string
+    type varID = TextID of string | GlobalID of int | LocalID of int | PatternID of int * string | JokerID
     type value = VInt of int 
                | VFloat of float 
                | VString of string 
@@ -288,7 +288,7 @@ sig
                | VUnit
                | VList of value list 
                | VTuple of value list
-               | VFunction of pattern * expression
+               | VFunction of pattern * expression * value option ref array
     and expression = Constant of value
                    | Variable of varID
                    | Call of expression * expression
@@ -313,6 +313,7 @@ sig
 
     val create: unit -> t
     val bind_ids: t -> statement -> statement
+    val eval: t -> expression -> value
     val add_value: t-> string -> value -> unit
     val add_bin_operator: t-> string -> (value -> value -> value) -> unit
     val add_un_operator: t-> string -> (value -> value) -> unit
@@ -320,7 +321,7 @@ end
 
 module Program : ProgramType =
 struct
-    type varID = TextID of string | GlobalID of int | LocalID of int | PatternID of int * string
+    type varID = TextID of string | GlobalID of int | LocalID of int | PatternID of int * string | JokerID
     type value = VInt of int 
                | VFloat of float 
                | VString of string 
@@ -329,7 +330,7 @@ struct
                | VUnit
                | VList of value list 
                | VTuple of value list
-               | VFunction of pattern * expression
+               | VFunction of pattern * expression * value option ref array
     and expression = Constant of value
                    | Variable of varID
                    | Call of expression * expression
@@ -351,7 +352,7 @@ struct
                    | Raw of Token.t
 
     type t = { ids: (string, int) Hashtbl.t;
-               values: value option Stack.t Vector.t; 
+               values: value option ref Stack.t Vector.t; 
                bin_ops: (value -> value -> value) Vector.t;
                un_ops: (value -> value) Vector.t }
 
@@ -436,6 +437,7 @@ struct
                 Variable v ->
                     begin match v with
                         PatternID (id, t) -> Hashtbl.add program.ids t id; Variable v
+                      | TextID "_" -> Variable (JokerID)
                       | TextID t -> let id = Vector.length program.values in
                                     Vector.append program.values (Stack.create());
                                     Hashtbl.add program.ids t id; 
@@ -448,6 +450,7 @@ struct
         let rec unbind_pattern pat =
             match pat with
                 Variable (PatternID (_, t)) -> Hashtbl.remove program.ids t
+              | Variable (JokerID) -> ()
               | Tuple t -> ignore (List.map unbind_pattern t)
               | BinaryOperator (_, a, b) -> unbind_pattern a; unbind_pattern b
               | _ -> failwith "Wrong pattern"
@@ -488,11 +491,78 @@ struct
         |> find_free_variables
         |> fix_local_ids
 
+    let push_pattern program pat =
+        match pat with
+            Variable (PatternID (id, _)) -> Vector.get program.values id |> Stack.push (ref None)
+          | Variable (JokerID) -> ()
+          | _ -> failwith "TODO: pattern matching"
+
+    let pop_pattern program pat =
+        match pat with
+            Variable (PatternID (id, _)) -> ignore(Vector.get program.values id |> Stack.pop)
+          | _ -> ()
+
+    let assign_pattern program pat value =
+        match pat with
+            Variable (PatternID (id, _)) -> (Vector.get program.values id |> Stack.top) := Some value
+          | Variable (JokerID) -> ()
+          | _ -> failwith "TODO: pattern matching"
+
+    let eval program e =
+        let get_value_ref local id =
+            match id with
+                GlobalID id -> Stack.top (Vector.get program.values id)
+              | LocalID id -> local.(id)
+            in
+        let get_value local id =
+            match !(get_value_ref local id) with
+                Some x -> x
+              | None -> failwith "Trying to access value of uninitialised variable"
+            in
+        let rec go local expr =
+            match expr with
+                Constant c -> c
+              | Variable id -> get_value local id
+              | Call (f, a) ->
+                begin
+                    let arg = go local a in
+                    match go local f with
+                        VFunction (pat, body, loc) ->
+                            push_pattern program pat;
+                            assign_pattern program pat arg;
+                            let result = go loc body in
+                            pop_pattern program pat;
+                            result
+                      | _ -> failwith "Type error: expected function"
+                end
+              | Tuple t -> VTuple (List.map (go local) t)
+              | LambdaFV (pat, body, loc) -> VFunction (pat, body, Array.map (get_value_ref local) loc)
+              | UnaryOperator ((GlobalID id), x) -> let f = Vector.get program.un_ops id in f (go local x)
+              | BinaryOperator ((GlobalID id), a, b) -> let f = Vector.get program.bin_ops id in 
+                                                        f (go local a) (go local b)
+              | IfElse (con, a, b) ->
+                begin
+                    match go local con with
+                        VBool true -> go local a
+                      | VBool false -> go local b
+                      | _ -> failwith "Type error: expected bool in if clausule"
+                end
+              | LetIn (def, expr) ->
+                    let pats, _ = List.split def in
+                    ignore (List.map (push_pattern program) pats);
+                    ignore (List.rev def |> List.map (fun (p, v) -> assign_pattern program p (go local v)));
+                    let res = go local expr in
+                    ignore (List.map (pop_pattern program) pats);
+                    res
+              | _ -> failwith "Internal error: wrong pattern"
+            in
+        go [||] e
+
     let add_value program id v =
         let nr = Vector.length program.values in
         Hashtbl.add program.ids id nr;
         Vector.append program.values (Stack.create ());
-        Stack.push (Some v) (Vector.get program.values nr)
+        Stack.push (ref (Some v)) (Vector.get program.values nr)
 
     let add_bin_operator program id f =
         let nr = Vector.length program.bin_ops in
