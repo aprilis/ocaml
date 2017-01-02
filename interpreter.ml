@@ -382,14 +382,14 @@ struct
               | IfElse (con, a, b) -> let (con, fc) = go_expr con and (a, fa) = go_expr a and (b, fb) = go_expr b in
                                             (IfElse (con, a, b), M.union (M.union fa fb) fc)
               | LetIn (def, expr) -> let (def, fp, fv) = go_def def and (expr, fe) = go_expr expr in
-                                     (LetIn (def, expr), M.diff fp (M.union fe fv))
+                                     (LetIn (def, expr), M.diff (M.union fe fv) fp)
               | _ -> (e, M.empty)
         and go_pat pat =
             match pat with
                 Variable (PatternID (id, _)) -> M.singleton (i32 id)
               | Tuple t -> t |> List.map go_pat |> union_list
               | BinaryOperator (_, a, b) -> M.union (go_pat a) (go_pat b)
-              | _ -> failwith "Wrong pattern"
+              | _ -> M.empty
         and go_def def =
             let (p, e) = List.split def in
             let fp = p |> List.map go_pat |> union_list in
@@ -442,10 +442,11 @@ struct
                                     Vector.append program.values (Stack.create());
                                     Hashtbl.add program.ids t id; 
                                     Variable (PatternID (id, t))
+                      | _ -> Variable v
                     end
               | Tuple t -> Tuple (List.map bind_pattern t)
               | BinaryOperator (id, a, b) -> BinaryOperator (id, bind_pattern a, bind_pattern b)
-              | _ -> failwith "Wrong pattern"
+              | _ -> pat
             in
         let rec unbind_pattern pat =
             match pat with
@@ -453,7 +454,7 @@ struct
               | Variable (JokerID) -> ()
               | Tuple t -> ignore (List.map unbind_pattern t)
               | BinaryOperator (_, a, b) -> unbind_pattern a; unbind_pattern b
-              | _ -> failwith "Wrong pattern"
+              | _ -> ()
             in
         let get_id id =
             match id with
@@ -491,22 +492,30 @@ struct
         |> find_free_variables
         |> fix_local_ids
 
-    let push_pattern program pat =
+    let rec push_pattern program pat =
         match pat with
             Variable (PatternID (id, _)) -> Vector.get program.values id |> Stack.push (ref None)
           | Variable (JokerID) -> ()
-          | _ -> failwith "TODO: pattern matching"
-
-    let pop_pattern program pat =
-        match pat with
-            Variable (PatternID (id, _)) -> ignore(Vector.get program.values id |> Stack.pop)
+          | Tuple t -> ignore (List.map (push_pattern program) t)
+          | BinaryOperator (_, a, b) -> push_pattern program a; push_pattern program b
           | _ -> ()
 
-    let assign_pattern program pat value =
+    let rec pop_pattern program pat =
         match pat with
-            Variable (PatternID (id, _)) -> (Vector.get program.values id |> Stack.top) := Some value
-          | Variable (JokerID) -> ()
-          | _ -> failwith "TODO: pattern matching"
+            Variable (PatternID (id, _)) -> ignore(Vector.get program.values id |> Stack.pop)
+          | Tuple t -> ignore (List.map (pop_pattern program) t)
+          | _ -> ()
+
+    let rec assign_pattern program pat value =
+        match pat, value with
+            Variable (PatternID (id, _)), _ -> (Vector.get program.values id |> Stack.top) := Some value
+          | Variable (JokerID), _ -> ()
+          | Tuple t, VTuple v -> ignore (List.combine t v |> List.map (fun (a, b) -> assign_pattern program a b))
+          | BinaryOperator (TextID "::", v, t), VList (vh::vt) ->
+                assign_pattern program v vh;
+                assign_pattern program t (VList vt)
+          | Constant c, _ when c = value -> ()
+          | _ -> failwith "Pattern matching failed"
 
     let eval program e =
         let get_value_ref local id =
@@ -647,6 +656,10 @@ struct
                         ignore (remove (get !it.next));
                         ignore (remove (get !it.prev));
                         !it.item <- Some (Expression (make_list t))
+                    | Some (Expression e), Some (Raw (Token.LeftSBracket)), Some (Raw (Token.RightSBracket)) ->
+                        ignore (remove (get !it.next));
+                        ignore (remove (get !it.prev));
+                        !it.item <- Some (Expression (make_list [e]))
                     | _ -> ()
                 end;
                 it := get !it.next
@@ -766,6 +779,20 @@ struct
                     it := get !it.next
                 done
                 in
+            let fold_bin_rev filter =
+                let it = ref (get (get en.prev).prev) in
+                while not (equal !it bg) && not (equal !it (get bg.next)) do
+                    begin match !it.item, (get !it.prev).item, (get !it.next).item with
+                        Some (Raw (Token.BinaryOperator op)), Some (Expression a), Some (Expression b)
+                            when filter op ->
+                                !it.item <- Some (Expression (BinaryOperator (TextID op, a, b)));
+                                ignore (remove (get !it.next));
+                                ignore (remove (get !it.prev))
+                        | _ -> ()
+                    end;
+                    it := get !it.prev
+                done
+                in
             let list_filter l x = List.mem x l in
             fold_bin (list_filter ["**"]);
             fold_bin (list_filter ["*"; "/"; "%"]);
@@ -773,7 +800,7 @@ struct
             fold_bin (list_filter ["^";"|";"&"]);
             fold_bin (list_filter ["==";">";"<";">=";"<="]);
             fold_bin (list_filter ["||";"&&"]);
-            fold_bin (list_filter ["::"]);
+            fold_bin_rev (list_filter ["::"]);
             fold_bin (fun _ -> true);
 
             (*commas*)
