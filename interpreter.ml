@@ -494,7 +494,7 @@ struct
 
     let rec push_pattern program pat =
         match pat with
-            Variable (PatternID (id, _)) -> Vector.get program.values id |> Stack.push (ref None)
+            Variable (PatternID (id, _)) -> print_endline ("push " ^ string_of_int id); Vector.get program.values id |> Stack.push (ref None)
           | Variable (JokerID) -> ()
           | Tuple t -> ignore (List.map (push_pattern program) t)
           | BinaryOperator (_, a, b) -> push_pattern program a; push_pattern program b
@@ -502,13 +502,14 @@ struct
 
     let rec pop_pattern program pat =
         match pat with
-            Variable (PatternID (id, _)) -> ignore(Vector.get program.values id |> Stack.pop)
+            Variable (PatternID (id, _)) -> print_endline ("pop " ^ string_of_int id); ignore(Vector.get program.values id |> Stack.pop)
           | Tuple t -> ignore (List.map (pop_pattern program) t)
+          | BinaryOperator (_, a, b) -> pop_pattern program a; pop_pattern program b
           | _ -> ()
 
     let rec assign_pattern program pat value =
         match pat, value with
-            Variable (PatternID (id, _)), _ -> (Vector.get program.values id |> Stack.top) := Some value
+            Variable (PatternID (id, _)), _ -> print_endline ("assign " ^ string_of_int id); (Vector.get program.values id |> Stack.top) := Some value
           | Variable (JokerID), _ -> ()
           | Tuple t, VTuple v -> ignore (List.combine t v |> List.map (fun (a, b) -> assign_pattern program a b))
           | BinaryOperator (TextID "::", v, t), VList (vh::vt) ->
