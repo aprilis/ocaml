@@ -323,6 +323,7 @@ sig
     type t
 
     exception RuntimeErr of string
+    exception BindErr of string
     exception InternalErr of string
 
     val create: unit -> t
@@ -1042,3 +1043,42 @@ let init_operators program =
         match x with
             VInt x -> VInt (lnot x)
           | _ -> failwith "wrong types")
+
+module REPL =
+struct
+
+    let split_on_semicolon l =
+        let rec go l p =
+            match l with
+                [] -> []
+              | Token.SemiColon :: t ->
+                    let t = go t [] in if p = [] then t else p :: t
+              | h :: t -> go t (h :: p)
+        in go l [] |> List.map List.rev
+    
+    let eval_statement program l =
+        let backup = Program.backup program in
+        try
+            let statement = l |> Parser.parse |> Program.bind_ids program in 
+            match statement with
+                Program.Expression e -> Program.eval program e; print_endline "eval"; ()
+              | Program.DefinitionList def -> Program.feed program def; print_endline "feed"; ()
+        with err ->
+            Program.restore program backup;
+            raise err
+
+    let eval_code program str =
+        try
+            String.split_on_char '\n' str
+         |> List.map Token.get_tokens
+         |> List.flatten
+         |> split_on_semicolon
+         |> List.iter (eval_statement program)
+        with Token.Err err -> print_endline ("Lexer error: " ^ err)
+           | Parser.Err err -> print_endline ("Parser error: " ^ err)
+           | Program.RuntimeErr err -> print_endline ("Runtime error: " ^ err)
+           | Program.BindErr err -> print_endline ("Unbound value: " ^ err)
+           | Program.InternalErr err -> print_endline ("Internal error: " ^ err)
+           | _ -> print_endline "Other error"
+
+end
