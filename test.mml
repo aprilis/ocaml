@@ -1,0 +1,7 @@
+let map f l =
+                if l == []
+                    then []
+                else
+                    let h::t = l in
+                    f h :: map f t;
+            map (fun x -> x * x) [1, 2.4, -3];

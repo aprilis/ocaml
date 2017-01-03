@@ -117,6 +117,7 @@ sig
 
     exception Err of string
 
+    val letters: string
     val get_tokens: string -> t list
 end
 
@@ -143,12 +144,14 @@ struct
 
     exception Err of string
 
+    let letters = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM_"
+
     type character = Digit | Letter | Whitespace | Dot | Special1 | Special2
 
     let failwith str = raise (Err str)
 
     let characters = [(Digit, "0123456789");
-                    (Letter, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM_");
+                    (Letter, letters);
                     (Whitespace, " \n\t\r");
                     (Dot, ".");
                     (Special1, "()[];,");
@@ -157,7 +160,7 @@ struct
     let keywords =
         let rec make_hashtbl tbl l =
             match l with [] -> tbl | h::t -> Hashtbl.add tbl h h; make_hashtbl tbl t
-        and keywords_list = ["let"; "in"; "and"; "if"; "then"; "else"; "fun"; "true"; "false"]
+        and keywords_list = ["let"; "in"; "and"; "if"; "then"; "else"; "fun"; "import"; "quit"]
         in  make_hashtbl (Hashtbl.create 10) keywords_list
 
     let special1_type c = let specials = [('(', LeftBracket);
@@ -317,6 +320,8 @@ sig
     type statement = Definition of definition
                    | DefinitionList of definition_list
                    | Expression of expression
+                   | Import of string
+                   | Quit
                    | RawTuple of expression list
                    | Raw of Token.t
 
@@ -366,6 +371,8 @@ struct
     type statement = Definition of definition
                    | DefinitionList of definition_list
                    | Expression of expression
+                   | Import of string
+                   | Quit
                    | RawTuple of expression list
                    | Raw of Token.t
 
@@ -378,9 +385,9 @@ struct
     exception BindErr of string
     exception InternalErr of string
 
-    let fail_runtime str = raise (InternalErr str)
+    let fail_runtime str = raise (RuntimeErr str)
     let fail_bind str = raise (BindErr str)
-    let fail_internal str = raise (RuntimeErr str)
+    let fail_internal str = raise (InternalErr str)
 
     let create () = { ids = Hashtbl.create 50;
                       values = Vector.create (Stack.create ());
@@ -426,6 +433,7 @@ struct
         match statement with
             Expression e -> let (e, _) = go_expr e in Expression e
           | DefinitionList def -> let (def, _, _) = go_def def in DefinitionList def
+          | Quit | Import _ -> statement
           | _ -> fail_internal "find_free_variables"
 
     let fix_local_ids statement =
@@ -455,6 +463,7 @@ struct
         match statement with
             Expression e -> Expression (go_expr tbl e)
           | DefinitionList def -> DefinitionList (go_def tbl def)
+          | Quit | Import _ -> statement
           | _ -> fail_internal "fix_local_ids"
 
     let bind_ids program statement =
@@ -514,6 +523,7 @@ struct
             | DefinitionList def -> let def = bind_def def in
                                     let def = go_def def in
                                     unbind_def def; DefinitionList def
+            | Quit | Import _ -> statement
             | _ -> fail_internal "bind_ids")
         |> find_free_variables
         |> fix_local_ids
@@ -643,7 +653,8 @@ struct
         
     let backup program = Vector.length program.values
     let restore program nr =
-        Hashtbl.iter (fun a b -> if b >= nr then Hashtbl.remove program.ids a) program.ids;
+        Hashtbl.iter (fun a b -> if String.contains Token.letters a.[0] && b >= nr 
+                     then Hashtbl.remove program.ids a) program.ids;
         while Vector.length program.values > nr do
             Vector.pop program.values
         done
@@ -669,9 +680,10 @@ struct
             | Token.Float (x, y) :: t -> Expression (Constant (VFloat x)) :: parse_atom t
             | Token.String x :: t -> Expression (Constant (VString x)) :: parse_atom t
             | Token.Char x :: t -> Expression (Constant (VChar x)) :: parse_atom t
-            | Token.Keyword "true" :: t -> Expression (Constant (VBool true)) :: parse_atom t
-            | Token.Keyword "false" :: t -> Expression (Constant (VBool false)) :: parse_atom t
+            | Token.Id "true" :: t -> Expression (Constant (VBool true)) :: parse_atom t
+            | Token.Id "false" :: t -> Expression (Constant (VBool false)) :: parse_atom t
             | Token.Id x :: t -> Expression (Variable (TextID x)) :: parse_atom t
+            | Token.Keyword "quit" :: t -> Quit :: parse_atom t
             | h :: t -> Raw h :: parse_atom t
         
     let rec make_list l =
@@ -888,6 +900,18 @@ struct
                 it := get !it.next
             done;
 
+            (*import*)
+            let a = get bg.next in
+            let b = get a.next in
+            if not (equal b en) then
+            begin
+                match a.item, b.item with
+                    Some (Raw (Token.Keyword "import")), Some(Expression (Constant (VString x))) -> 
+                        ignore (remove b);
+                        a.item <- Some (Import x)
+                  | _ -> ()
+            end;
+
             if not (equal (get bg.next) (get en.prev)) then failwith "syntax error"
         end
 
@@ -942,10 +966,11 @@ struct
                 | _ -> e
             in
         match statement with
-            DefinitionList [] -> DefinitionList []
+              DefinitionList [] -> DefinitionList []
             | DefinitionList ((p, e)::t) -> let DefinitionList t = fix_fun (DefinitionList t) in
                                             DefinitionList (go p (go_expr e) :: t)
             | Expression e -> Expression (go_expr e)
+            | Quit | Import _ -> statement
             | _ -> failwith "syntax error"
 
     let parse tok =
@@ -1047,6 +1072,43 @@ let init_operators program =
 module REPL =
 struct
 
+    exception Quit
+    exception FileErr of string
+
+    let rec print_value value =
+        let open Program in
+        let special = [('\n', 'n');('\\', '\\')] in
+        let special_string, special_char = ('"', '"')::special, ('\t', 't')::('\'', '\'')::special in
+        let print_list l =
+            match l with
+                [] -> ()
+              | h::t -> print_value h; List.iter (fun v -> print_string ", "; print_value v) t
+            in
+        match value with
+            VInt x -> print_int x
+          | VFloat x -> print_float x
+          | VBool x -> print_string (if x then "true" else "false")
+          | VChar x -> print_char '\'';
+                       begin try let k = List.assoc x special_char in
+                           print_char '\\';
+                           print_char k
+                       with Not_found -> print_char x
+                       end;
+                       print_char '\'';
+          | VString x -> let pr c =
+                             try let k = List.assoc c special_string in
+                                print_char '\\';
+                                print_char k
+                             with Not_found -> print_char c
+                         in
+                         print_char '"';
+                         String.iter pr x;
+                         print_char '"'
+          | VUnit -> print_string "()"
+          | VTuple t -> print_char '('; print_list t; print_char ')'
+          | VList t -> print_char '['; print_list t; print_char ']'
+          | VFunction (_, _, _) -> print_string "<function>"
+
     let split_on_semicolon l =
         let rec go l p =
             match l with
@@ -1055,21 +1117,37 @@ struct
                     let t = go t [] in if p = [] then t else p :: t
               | h :: t -> go t (h :: p)
         in go l [] |> List.map List.rev
+
+    let has_semicolon l =
+        l |> Token.get_tokens |> List.mem Token.SemiColon
+
+    let open_file path =
+        try 
+            let file = open_in path in
+            let rec read () =
+                try let l = input_line file in l :: read () with End_of_file -> []
+            in read ()
+        with _ -> raise (FileErr path)
     
-    let eval_statement program l =
+    let rec eval_statement program l =
         let backup = Program.backup program in
         try
             let statement = l |> Parser.parse |> Program.bind_ids program in 
             match statement with
-                Program.Expression e -> Program.eval program e; print_endline "eval"; ()
-              | Program.DefinitionList def -> Program.feed program def; print_endline "feed"; ()
+                Program.Expression e -> Program.eval program e |> print_value; print_newline ()
+              | Program.DefinitionList def -> Program.feed program def |> List.iter (fun (name, value) ->
+                        print_string name; print_string " = "; print_value value; print_newline ())
+              | Program.Quit -> raise Quit
+              | Program.Import path -> open_file path |> eval_code program
+              | _ -> ()
         with err ->
             Program.restore program backup;
             raise err
 
-    let eval_code program str =
+    and eval_code program lines =
         try
-            String.split_on_char '\n' str
+            List.map (String.split_on_char '\n') lines
+         |> List.flatten
          |> List.map Token.get_tokens
          |> List.flatten
          |> split_on_semicolon
@@ -1079,6 +1157,22 @@ struct
            | Program.RuntimeErr err -> print_endline ("Runtime error: " ^ err)
            | Program.BindErr err -> print_endline ("Unbound value: " ^ err)
            | Program.InternalErr err -> print_endline ("Internal error: " ^ err)
+           | Quit -> raise Quit
+           | FileErr err -> print_endline ("Failed to read file: " ^ err)
            | _ -> print_endline "Other error"
+
+    let start () =
+        let program = Program.create () in
+        init_operators program;
+        try while true do
+            print_string "# ";
+            let lines = ref [] and finished = ref false in
+            while not !finished do
+                let l = read_line () in
+                lines := l :: !lines;
+                if has_semicolon l then finished := true else print_string "  "
+            done;
+            eval_code program (List.rev !lines)
+        done with Quit -> ()
 
 end
