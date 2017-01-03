@@ -1,4 +1,5 @@
 #use "interpreter.ml";;
+REPL.start ();;
 let code = "let map f l =
                 if l == []
                     then []

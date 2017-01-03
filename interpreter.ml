@@ -955,7 +955,7 @@ struct
         let rec go_expr e =
             match e with
                 Call (a, b) -> Call (go_expr a, go_expr b)
-                | Lambda (a, b) -> Lambda (a, go_expr b)
+                | Lambda (a, b) -> let a, b = go a (go_expr b) in Lambda (a, b)
                 | Tuple t -> Tuple (List.map go_expr t)
                 | UnaryOperator (id, e) -> UnaryOperator (id, go_expr e)
                 | BinaryOperator (id, a, b) -> BinaryOperator (id, go_expr a, go_expr b)
