@@ -1,5 +1,7 @@
 type t = LeftBracket 
         | RightBracket
+        | LeftSBracket
+        | RightSBracket
         | Comma
         | SemiColon
         | Equality
@@ -15,25 +17,33 @@ type t = LeftBracket
         | Id of string
         | Raw of char list
 
+exception Err of string
+
+let letters = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM_"
+
 type character = Digit | Letter | Whitespace | Dot | Special1 | Special2
 
-let string_of_char c = String.make 1 c
+let failwith str = raise (Err str)
 
 let characters = [(Digit, "0123456789");
-                (Letter, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM_");
+                (Letter, letters);
                 (Whitespace, " \n\t\r");
                 (Dot, ".");
-                (Special1, "();,");
-                (Special2, "@$:~!%^&*-+=[]|<,>/")]
+                (Special1, "()[];,");
+                (Special2, "@$:~!%^&*-+=|<,>/")]
+
+let string_of_char c = String.make 1 c
 
 let keywords =
     let rec make_hashtbl tbl l =
         match l with [] -> tbl | h::t -> Hashtbl.add tbl h h; make_hashtbl tbl t
-    and keywords_list = ["let"; "in"; "and"; "if"; "then"; "else"; "fun"]
+    and keywords_list = ["let"; "in"; "and"; "if"; "then"; "else"; "fun"; "import"; "quit"]
     in  make_hashtbl (Hashtbl.create 10) keywords_list
 
 let special1_type c = let specials = [('(', LeftBracket);
-                                        (')', RightBracket); 
+                                        (')', RightBracket);
+                                        ('[', LeftSBracket);
+                                        (']', RightSBracket); 
                                         (';', SemiColon);
                                         (',', Comma)] in
     List.assoc c specials
@@ -41,7 +51,7 @@ let special1_type c = let specials = [('(', LeftBracket);
 let char_type c =
     try (let (result, _) =
         List.find (function (_, str) -> String.contains str c) characters in result)
-    with Not_found -> failwith ("Invalid_character: " ^ (string_of_char c))
+    with Not_found -> failwith ("invalid_character: " ^ (string_of_char c))
 
 let parse_text tokens =
     let special = [('n', '\n');('t', '\t');('\\', '\\')] in
@@ -52,18 +62,18 @@ let parse_text tokens =
             match str with
                 '\\'::c::t -> 
                     (try Buffer.add_char buf (List.assoc c special_string); go t
-                    with Not_found -> failwith "Syntax error: wrong letter after backslash")
+                    with Not_found -> failwith "wrong letter after backslash")
             | '"'::t -> t
             | c::t -> Buffer.add_char buf c; go t
-            | _ -> failwith "Syntax error"
+            | _ -> failwith "expected \""
             in
         let tail = go str in (Buffer.contents buf, tail) in
     let get_char str =
         match str with
             '\\'::c::'\''::t -> (try (List.assoc c special_char, t)
-                with Not_found -> failwith "Syntax error: wrong letter after backslash")
+                with Not_found -> failwith "wrong letter after backslash")
             | c::'\''::t when c <> '\\' -> (c, t)
-            | _ -> failwith "Syntax error"
+            | _ -> failwith "expected \'"
         in
     let rec parse_raw str =
         match str with
@@ -119,7 +129,7 @@ let parse tokens =
                     (Float(x +. float_of_int (char_to_int h) *. m /. 10.0, m /. 10.0))) t
                 | Some (Id x), Letter -> parse_raw (Some (Id (x ^ string_of_char h))) t
                 | Some (Id x), Digit -> parse_raw (Some (Id (x ^ string_of_char h))) t
-                | _ -> failwith ("Syntax error: invalid token in " ^ string_of_chars str)
+                | _ -> failwith ("invalid token in " ^ string_of_chars str)
         in
     let rec go tok =
         match tok with
@@ -136,13 +146,14 @@ let classify_operators tok =
             | String _
             | Char _
             | Id _
-            | RightBracket -> true
+            | RightBracket
+            | RightSBracket -> true
             | _ -> false
         in
     let rec go prev tok =
         match tok with
             [] -> []
-            | Operator x :: t -> (if prev then BinaryOperator x else UnaryOperator x) :: go false t
+            | Operator x :: t -> (if prev then BinaryOperator x else UnaryOperator (x ^ "u")) :: go false t
             | h :: t -> h :: go (expr h) t
     in go false tok
 

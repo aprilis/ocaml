@@ -1,5 +1,7 @@
 type t = LeftBracket 
         | RightBracket
+        | LeftSBracket
+        | RightSBracket
         | Comma
         | SemiColon
         | Equality
@@ -15,4 +17,7 @@ type t = LeftBracket
         | Id of string
         | Raw of char list
 
+exception Err of string
+
+val letters: string
 val get_tokens: string -> t list

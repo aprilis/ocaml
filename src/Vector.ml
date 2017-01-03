@@ -14,6 +14,10 @@ let append vec a =
     Array.set vec.arr vec.len a;
     vec.len <- vec.len + 1
 
+let pop vec =
+    vec.len <- vec.len - 1;
+    Array.set vec.arr vec.len vec.default
+
 let get vec n = 
     if n >= vec.len 
     then raise (Invalid_argument "index out of bounds")
