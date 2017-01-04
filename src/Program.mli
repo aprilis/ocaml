@@ -22,12 +22,14 @@ and expression = Constant of value
                 | BinaryOperator of varID * expression * expression
                 | IfElse of expression * expression * expression
                 | LetIn of definition_list * expression
+                | MatchWith of expression * definition_list
 and definition = pattern * expression
 and definition_list = definition list
 and pattern = expression
 
 type statement = Definition of definition
                 | DefinitionList of definition_list
+                | Match of pattern * expression
                 | Expression of expression
                 | Import of string
                 | Quit

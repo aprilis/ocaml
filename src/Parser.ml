@@ -108,7 +108,17 @@ let rec fold_expr bg en =
                         ("and", { func = (fun [Expression pat;
                                                 Raw Token.Equality;
                                                 Expression e] ->
-                                                Definition (pat, e)); argc = 3})] in
+                                                Definition (pat, e)); argc = 3});
+                        ("match", { func = (fun [Expression e;
+                                                 Raw (Token.Keyword "with");
+                                                 Expression pat;
+                                                 Raw Token.DArrow;
+                                                 Expression res] ->
+                                                Expression (MatchWith (e, [(pat, res)]))); argc = 5});
+                        ("or", { func = (fun [Expression pat;
+                                                Raw Token.DArrow;
+                                                Expression res] ->
+                                                Match (pat, res)); argc = 3})] in
         let it = ref (get bg.next) in
         while not (equal !it en) do
             begin match !it.item with
@@ -134,7 +144,7 @@ let rec fold_expr bg en =
                 Some (Definition d), Some (DefinitionList l) ->
                     !it.item <- Some (DefinitionList (d :: l));
                     ignore (remove (get !it.prev))
-                | Some (Raw (Token.Keyword "in")), Some (DefinitionList d) ->
+              | Some (Raw (Token.Keyword "in")), Some (DefinitionList d) ->
                 begin
                     let next = get !it.next in
                     if not (equal next en) then
@@ -145,7 +155,10 @@ let rec fold_expr bg en =
                                 ignore (remove (get !it.prev))
                             | _ -> ()
                 end
-                | _ -> ()
+              | Some (Match (a, b)), Some (Expression (MatchWith (e, l))) ->
+                    !it.item <- Some (Expression (MatchWith (e, (a, b) :: l)));
+                    ignore (remove (get !it.prev))
+              | _ -> ()
             end;
             it := get !it.next
         done;
@@ -258,24 +271,30 @@ let rec fold_expr bg en =
     end
 
 let left_brackets = [Token.LeftBracket; Token.LeftSBracket; Token.Keyword "if";
-                        Token.Keyword "let"; Token.Keyword "fun"]
-let separators = [Token.Keyword "then"; Token.Keyword "and"; Token.Equality]
+                        Token.Keyword "let"; Token.Keyword "fun"; Token.Keyword "match"]
+let separators = [Token.Keyword "then"; Token.Keyword "and"; Token.Equality; Token.Keyword "with";
+                        Token.Keyword "or"; Token.DArrow]
 let right_brackets = [Token.RightBracket; Token.RightSBracket;
                         Token.Keyword "else"; Token.Keyword "in"; Token.Arrow]
 let fold_brackets dl =
     let open DList in
     let it = ref (get dl.next) in
     let st = Stack.create () in
+    let pop it =
+        let finished = ref false in
+        try while not !finished do
+            let t = Stack.pop st in
+            ignore (fold_expr t it);
+            if t.item <> Some (Raw (Token.DArrow)) || it.item = Some (Raw (Token.Keyword "or")) then finished := true;
+        done with Stack.Empty -> failwith "syntax error"
+        in
     while !it.item <> None do
         begin match !it.item with
             Some (Raw x) ->
-                if List.mem x separators || List.mem x right_brackets then begin
-                    let prev = try Stack.pop st with Stack.Empty -> failwith "syntax error" in 
-                    ignore (fold_expr prev !it)
-                end;
+                if List.mem x separators || List.mem x right_brackets then ignore (pop !it);
                 if List.mem x separators || List.mem x left_brackets then
                     Stack.push !it st
-            | _ -> ()
+          | _ -> ()
         end;
         it := get !it.next
     done;
@@ -283,7 +302,7 @@ let fold_brackets dl =
         ignore (fold_expr (Stack.pop st) !it)
     done
 
-let rec fix_fun statement =
+let rec final_touch statement =
     let rec check pat =
         match pat with
             Constant _ | Variable _ | Tuple _ | BinaryOperator (TextID "::", _, _) |
@@ -304,14 +323,13 @@ let rec fix_fun statement =
             | BinaryOperator (id, a, b) -> BinaryOperator (id, go_expr a, go_expr b)
             | IfElse (a, b, c) -> IfElse (go_expr a, go_expr b, go_expr c)
             | LetIn (def, e) ->
-                let DefinitionList def = fix_fun (DefinitionList def) in
+                let DefinitionList def = final_touch (DefinitionList def) in
                 LetIn (def, go_expr e)
+            | MatchWith (e, l) -> MatchWith (go_expr e, List.rev l |> List.map (fun (p, e) -> check p; (p, go_expr e)))
             | _ -> e
         in
     match statement with
-            DefinitionList [] -> DefinitionList []
-        | DefinitionList ((p, e)::t) -> let DefinitionList t = fix_fun (DefinitionList t) in
-                                        DefinitionList (go p (go_expr e) :: t)
+          DefinitionList def -> DefinitionList (List.rev def |> List.map (fun (p, e) -> go p (go_expr e)))
         | Expression e -> Expression (go_expr e)
         | Quit | Import _ -> statement
         | _ -> failwith "syntax error"
@@ -322,4 +340,4 @@ let parse tok =
     let dl = of_list (parse_atom tok) in
     fold_brackets dl;
     fold_expr dl (_end dl);
-    fix_fun (get (get dl.next).item)
+    final_touch (get (get dl.next).item)

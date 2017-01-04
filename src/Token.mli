@@ -6,6 +6,7 @@ type t = LeftBracket
         | SemiColon
         | Equality
         | Arrow
+        | DArrow
         | Keyword of string
         | Operator of string
         | UnaryOperator of string

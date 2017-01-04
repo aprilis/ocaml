@@ -21,12 +21,14 @@ and expression = Constant of value
                 | BinaryOperator of varID * expression * expression
                 | IfElse of expression * expression * expression
                 | LetIn of definition_list * expression
+                | MatchWith of expression * definition_list
 and definition = pattern * expression
 and definition_list = definition list
 and pattern = expression
 
 type statement = Definition of definition
                 | DefinitionList of definition_list
+                | Match of pattern * expression
                 | Expression of expression
                 | Import of string
                 | Quit
@@ -52,7 +54,7 @@ let find_free_variables statement =
     let union_list = List.fold_left M.union M.empty in
     let rec go_expr e =
         match e with
-            Variable (GlobalID id) -> (e, M.singleton (i32 id))
+              Variable (GlobalID id) -> (e, M.singleton (i32 id))
             | Lambda (p, e) -> let fp = go_pat p and (e, fe) = go_expr e in
                                 let fv = M.diff fe fp in
                                 (LambdaFV (p, e, fv |> M.elements |> List.map (fun x -> GlobalID (Int32.to_int x))
@@ -68,6 +70,8 @@ let find_free_variables statement =
                                         (IfElse (con, a, b), M.union (M.union fa fb) fc)
             | LetIn (def, expr) -> let (def, fp, fv) = go_def def and (expr, fe) = go_expr expr in
                                     (LetIn (def, expr), M.diff (M.union fe fv) fp)
+            | MatchWith (e, l) -> let (e, fe) = go_expr e and (l, fl) = go_mat l in
+                                    (MatchWith (e, l), M.union fe fl)
             | _ -> (e, M.empty)
     and go_pat pat =
         match pat with
@@ -80,6 +84,11 @@ let find_free_variables statement =
         let fp = p |> List.map go_pat |> union_list in
         let (e, fe) = e |> List.map go_expr |> List.split in
         (List.combine p e, fp, union_list fe)
+    and go_mat l =
+        let (p, e) = List.split l in
+        let fp = p |> List.map go_pat in
+        let (e, fe) = e |> List.map go_expr |> List.split in
+        (List.combine p e, List.map2 M.diff fe fp |> union_list)
         in
                 
     match statement with
@@ -109,6 +118,7 @@ let fix_local_ids statement =
             | BinaryOperator (id, a, b) -> BinaryOperator (id, go_expr tbl a, go_expr tbl b)
             | IfElse (con, a, b) -> IfElse (go_expr tbl con, go_expr tbl a, go_expr tbl b)
             | LetIn (def, expr) -> LetIn (go_def tbl def, go_expr tbl expr)
+            | MatchWith (e, l) -> MatchWith (go_expr tbl e, go_def tbl l)
             | _ -> e
     and go_def tbl def = List.map (fun (p, e) -> (p, go_expr tbl e)) def in
     let tbl = Hashtbl.create 10 in
@@ -152,6 +162,11 @@ let bind_ids program statement =
     let bind_def = List.map (fun (p, e) -> (bind_pattern p, e)) in
     let unbind_def def = List.iter (fun (p, _) -> unbind_pattern p) def in
     let rec go_def def = List.map (fun (p, e) -> (p, go_expr e)) def
+    and go_mat l =
+        let f (p, e) = let p = bind_pattern p in
+                       let e = go_expr e in
+                       unbind_pattern p; (p, e)
+        in List.map f l
     and go_expr e =
         match e with
                 Variable id -> Variable (get_id id)
@@ -168,6 +183,7 @@ let bind_ids program statement =
                                     let expr = go_expr expr in
                                     unbind_def def;
                                     LetIn (def, expr)
+            | MatchWith (e, l) -> MatchWith (go_expr e, go_mat l)
             | _ -> e
         in
     (match statement with
@@ -226,7 +242,7 @@ let rec check_type t1 t2 =
 
 let rec check_pattern pat value =
     match pat, value with
-        Tuple t, VTuple v when List.length t = List.length v ->
+          Tuple t, VTuple v when List.length t = List.length v ->
             List.fold_left2 (fun x y z -> x && (check_pattern y z)) true t v
         | Constant c, _ when c = value -> true
         | BinaryOperator (TextID "::", h, t), VList (vh::vt) -> check_pattern h vh && check_pattern t (VList vt)
@@ -292,15 +308,24 @@ let eval program e =
             begin
                 match go local con with
                     VBool true -> go local a
-                    | VBool false -> go local b
-                    | _ -> fail_runtime "type error: expected bool in if clausule"
+                  | VBool false -> go local b
+                  | _ -> fail_runtime "type error: expected bool in if clausule"
             end
             | LetIn (def, expr) ->
                 let pats, _ = List.split def in
                 List.iter (push_pattern program) pats;
-                List.rev def |> List.iter (fun (p, v) -> try_assign_pattern program p (go local v));
+                List.iter (fun (p, v) -> try_assign_pattern program p (go local v)) def;
                 let res = go local expr in
                 List.iter (pop_pattern program) pats;
+                res
+            | MatchWith (e, l) ->
+                let e = go local e in
+                let (p, r) = try List.find (fun (p,_) -> check_pattern p e) l with Not_found ->
+                    fail_runtime "pattern matching failed" in
+                push_pattern program p;
+                assign_pattern program p e;
+                let res = go local r in
+                pop_pattern program p;
                 res
             | _ -> fail_internal "eval"
         in
@@ -309,7 +334,7 @@ let eval program e =
 let feed program def =
     let pats, _ = List.split def in
     List.iter (push_pattern program) pats;
-    List.rev def |> List.iter (fun (p, v) -> try_assign_pattern program p (eval program v));
+    List.iter (fun (p, v) -> try_assign_pattern program p (eval program v)) def;
     let get_value id = let Some x = !(Vector.get program.values id |> Stack.top) in x in
     List.map get_variables pats |> List.flatten |> 
         List.map (fun (PatternID (id, name)) -> Hashtbl.add program.ids name id; (name, get_value id))

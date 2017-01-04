@@ -6,6 +6,7 @@ type t = LeftBracket
         | SemiColon
         | Equality
         | Arrow
+        | DArrow
         | Keyword of string
         | Operator of string
         | UnaryOperator of string
@@ -37,7 +38,7 @@ let string_of_char c = String.make 1 c
 let keywords =
     let rec make_hashtbl tbl l =
         match l with [] -> tbl | h::t -> Hashtbl.add tbl h h; make_hashtbl tbl t
-    and keywords_list = ["let"; "in"; "and"; "if"; "then"; "else"; "fun"; "import"; "quit"]
+    and keywords_list = ["let"; "in"; "and"; "if"; "then"; "else"; "fun"; "import"; "quit"; "match"; "with"; "or"]
     in  make_hashtbl (Hashtbl.create 10) keywords_list
 
 let special1_type c = let specials = [('(', LeftBracket);
@@ -102,8 +103,9 @@ let parse tokens =
     let final_touch token =
         match token with
             Id str -> (try Keyword (Hashtbl.find keywords str) with Not_found -> Id str)
-            | Operator str when str = "=" -> Equality
-            | Operator str when str = "->" -> Arrow
+            | Operator "=" -> Equality
+            | Operator "->" -> Arrow
+            | Operator "=>" -> DArrow
             | x -> x
             in
     let rec parse_raw prev str =
