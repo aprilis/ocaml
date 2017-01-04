@@ -49,7 +49,7 @@ let split_on_semicolon l =
     in go l [] |> List.map List.rev
 
 let has_semicolon l =
-    l |> Token.get_tokens |> List.mem Token.SemiColon
+    try l |> Token.get_tokens |> List.mem Token.SemiColon with _ -> false
 
 let open_file path =
     try 
@@ -89,7 +89,8 @@ and eval_code program lines =
         | Program.InternalErr err -> print_endline ("Internal error: " ^ err)
         | Quit -> raise Quit
         | FileErr err -> print_endline ("Failed to read file: " ^ err)
-        (*| _ -> print_endline "Other error"*)
+        | Stack_overflow -> print_endline ("Stack overflow")
+        | _ -> print_endline "Other error"
 
 let start () =
     let program = Program.create () in

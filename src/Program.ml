@@ -393,7 +393,8 @@ let init program =
           | _ -> failwith "wrong types");
     add_bin_operator program "**" (fun a b ->
         match a, b with
-            VInt a, VInt b -> VFloat (float_of_int a ** float_of_int b)
+            VInt a, VInt b -> if b >= 0 then VInt (int_of_float (float_of_int a ** float_of_int b))
+                              else VFloat (float_of_int a ** float_of_int b)
           | VFloat a, VFloat b -> VFloat (a ** b)
           | _ -> failwith "wrong types");
     add_bin_operator program ">" (fun a b -> VBool (a > b));
