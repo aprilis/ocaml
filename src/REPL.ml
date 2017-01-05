@@ -89,7 +89,7 @@ and eval_code program lines =
         | Program.InternalErr err -> print_endline ("Internal error: " ^ err)
         | Quit -> raise Quit
         | FileErr err -> print_endline ("Failed to read file: " ^ err)
-        | Stack_overflow -> print_endline ("Stack overflow")
+        | Stack_overflow -> print_endline ("Runtime error: Stack overflow")
         | _ -> print_endline "Other error"
 
 let start () =
