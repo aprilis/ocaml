@@ -484,7 +484,7 @@ let init program =
             imp 0 l |> Bytes.to_string
             in
         match a, b with
-            _, VType TAny
+            _, VType TAny -> a
           | _, _ when typeof a = b -> a
           | VInt x, VType TFloat -> VFloat (float_of_int x)
           | VInt x, VType TString -> VString (string_of_int x)

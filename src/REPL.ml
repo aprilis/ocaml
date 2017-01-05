@@ -36,7 +36,7 @@ let rec print_value value =
         | VNative _
         | VFunction (_, _, _) -> print_string "<function>"
         | VType x -> let types = [(TInt, "int");(TFloat, "float");(TString, "string");(TChar,"char");
-            (TBool, "bool");(TUnit, "unit");(TList, "list");(TFunction, "function");(TType, "type")] in
+            (TBool, "bool");(TUnit, "unit");(TList, "list");(TFunction, "function");(TType, "type"); (TAny, "any")] in
             List.assoc x types |> print_string
 
 let split_on_semicolon l =
