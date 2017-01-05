@@ -369,6 +369,8 @@ let init program =
         match a, b with
             VInt a, VInt b -> VInt (a + b)
           | VFloat a, VFloat b -> VFloat (a +. b)
+          | VInt a, VFloat b -> VFloat (float_of_int a +. b)
+          | VFloat a, VInt b -> VFloat (a +. float_of_int b)
           | VString a, VString b -> VString (a ^ b)
           | VList a, VList b -> VList (a @ b)
           | _ -> failwith "wrong types");
@@ -376,16 +378,22 @@ let init program =
         match a, b with
             VInt a, VInt b -> VInt (a - b)
           | VFloat a, VFloat b -> VFloat (a -. b)
+          | VInt a, VFloat b -> VFloat (float_of_int a -. b)
+          | VFloat a, VInt b -> VFloat (a -. float_of_int b)
           | _ -> failwith "wrong types");
     add_bin_operator program "*" (fun a b ->
         match a, b with
             VInt a, VInt b -> VInt (a * b)
           | VFloat a, VFloat b -> VFloat (a *. b)
+          | VInt a, VFloat b -> VFloat (float_of_int a *. b)
+          | VFloat a, VInt b -> VFloat (a *. float_of_int b)
           | _ -> failwith "wrong types");
     add_bin_operator program "/" (fun a b ->
         match a, b with
             VInt a, VInt b when b <> 0 -> VInt (a / b)
           | VFloat a, VFloat b -> VFloat (a /. b)
+          | VInt a, VFloat b -> VFloat (float_of_int a /. b)
+          | VFloat a, VInt b -> VFloat (a /. float_of_int b)
           | _ -> failwith "wrong types");
     add_bin_operator program "%" (fun a b ->
         match a, b with
@@ -396,13 +404,39 @@ let init program =
             VInt a, VInt b -> if b >= 0 then VInt (int_of_float (float_of_int a ** float_of_int b))
                               else VFloat (float_of_int a ** float_of_int b)
           | VFloat a, VFloat b -> VFloat (a ** b)
+          | VInt a, VFloat b -> VFloat (float_of_int a ** b)
+          | VFloat a, VInt b -> VFloat (a ** float_of_int b)
           | _ -> failwith "wrong types");
-    add_bin_operator program ">" (fun a b -> VBool (a > b));
-    add_bin_operator program "<" (fun a b -> VBool (a < b));
-    add_bin_operator program ">=" (fun a b -> VBool (a >= b));
-    add_bin_operator program "<=" (fun a b -> VBool (a <= b));
-    add_bin_operator program "==" (fun a b -> VBool (a = b));
-    add_bin_operator program "!=" (fun a b -> VBool (a <> b));
+    add_bin_operator program ">" (fun a b -> 
+        match a, b with
+            VInt a, VFloat b -> VBool((float_of_int a) > b)
+          | VFloat a, VInt b -> VBool(a > (float_of_int b))
+          | _ -> VBool(a > b));
+    add_bin_operator program "<" (fun a b -> 
+        match a, b with
+            VInt a, VFloat b -> VBool((float_of_int a) < b)
+          | VFloat a, VInt b -> VBool(a < (float_of_int b))
+          | _ -> VBool(a < b));
+    add_bin_operator program ">=" (fun a b -> 
+        match a, b with
+            VInt a, VFloat b -> VBool((float_of_int a) >= b)
+          | VFloat a, VInt b -> VBool(a >= (float_of_int b))
+          | _ -> VBool(a >= b));
+    add_bin_operator program "<=" (fun a b -> 
+        match a, b with
+            VInt a, VFloat b -> VBool((float_of_int a) <= b)
+          | VFloat a, VInt b -> VBool(a <= (float_of_int b))
+          | _ -> VBool(a <= b));
+    add_bin_operator program "==" (fun a b -> 
+        match a, b with
+            VInt a, VFloat b -> VBool((float_of_int a) = b)
+          | VFloat a, VInt b -> VBool(a = (float_of_int b))
+          | _ -> VBool(a = b));
+    add_bin_operator program "!=" (fun a b -> 
+        match a, b with
+            VInt a, VFloat b -> VBool((float_of_int a) <> b)
+          | VFloat a, VInt b -> VBool(a <> (float_of_int b))
+          | _ -> VBool(a <> b));
     add_bin_operator program "||" (fun a b ->
         match a, b with
             VBool false, VBool false -> VBool false
@@ -468,6 +502,8 @@ let init program =
           | VBool x, VType TInt -> VInt (if x then 1 else 0)
           | VBool x, VType TString -> VString (string_of_bool x)
           | VList x, VType TString -> VString (List.map (fun x -> let VChar y = go x (VType TChar) in y) x |> implode)
+          | VList a, VTuple b when List.length a = List.length b -> VTuple (List.map2 go a b)
+          | VTuple x, VType TList -> VList x
           | VTuple a, VTuple b when List.length a = List.length b -> VTuple (List.map2 go a b)
           | _ -> failwith "wrong types"
           in go );
