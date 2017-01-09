@@ -1,0 +1,27 @@
+let map (f:function) (l:list) = match l with [] => [] or h::t => f h :: map f t;
+let rev (l:list) =
+    let go p l =
+        match l with
+            [] => p
+         or h::t => go (h::p) t
+    in go [] l;
+let fold_left (f:function) a (l:list) = match l with [] => a or h::t => fold_left f (f a h) t;
+let fold_right (f:function) a (l:list) =
+    match l with
+        [] => a
+     or h::t => f h (fold_right f a t);
+let filter (f:function) (l:list) =
+    match l with
+        [] => []
+     or h::t =>
+        let tt = filter f t in
+        if f h then h::tt else tt;
+let count f (l:list) =
+    let go f l =
+        match l with
+            [] => 0
+         or h::t => (if f h then 1 else 0) + go f t
+        in
+    match f with
+        _:function => go f l
+     or _ => go (fun x -> x == f) l;

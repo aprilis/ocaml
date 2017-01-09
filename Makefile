@@ -5,7 +5,7 @@
 # bin-annot is required for Merlin and other IDE-like tools
 # The -I flag introduces sub-directories to search for code
 
-OCB_FLAGS = -tag bin_annot -I src -I lib
+OCB_FLAGS = -tag bin_annot -I src
 OCB = 		ocamlbuild $(OCB_FLAGS)
 
 all: 		native byte # profile debug

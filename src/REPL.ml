@@ -49,7 +49,7 @@ let split_on_semicolon l =
     in go l [] |> List.map List.rev
 
 let has_semicolon l =
-    try l |> Token.get_tokens |> List.mem Token.SemiColon with _ -> false
+    try l |> Token.get_tokens |> List.mem Token.SemiColon with _ -> true
 
 let open_file path =
     try 
