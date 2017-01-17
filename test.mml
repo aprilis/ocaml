@@ -1,7 +1,47 @@
-let map f l =
-                if l == []
-                    then []
-                else
-                    let h::t = l in
-                    f h :: map f t;
-            map (fun x -> x * x) [1, 2.4, -3];
+let map (f:function) (l:list) = match l with [] => [] or h::t => f h :: map f t;
+map (fun x -> x * x) [1, 2.4, -5];
+
+let rev (l:list) =
+    let go p l =
+        match l with
+            [] => p
+         or h::t => go (h::p) t
+    in go [] l;
+rev ['a', 'b', 'c'];
+
+let fold_left (f:function) a (l:list) = match l with [] => a or h::t => fold_left f (f a h) t;
+fold_left (fun a b -> a + b) 0 [1, 2, 3];
+
+let fold_right (f:function) a (l:list) =
+    match l with
+        [] => a
+     or h::t => f h (fold_right f a t);
+fold_right (fun a b -> a + 2 * b) 0 [1, 2, 3];
+     
+let filter (f:function) (l:list) =
+    match l with
+        [] => []
+     or h::t =>
+        let tt = filter f t in
+        if f h then h::tt else tt;
+filter (fun x -> x > 5) [0.5, 3, 6.7, 10, 1];
+
+let count f (l:list) =
+    let go f l =
+        match l with
+            [] => 0
+         or h::t => (if f h then 1 else 0) + go f t
+        in
+    match f with
+        _:function => go f l
+     or _ => go (fun x -> x == f) l;
+count 10 [10, 11, 12, 10, 6];
+count (fun x -> x > 5) [0.5, 3, 6.7, 10, 1];
+
+let min a b = if a <= b then a else b;
+let min_n a b = if b == () then a else min_n (min a b);
+min_n 1 2 (-3) 6 ();
+
+let max a b = if a >= b then a else b;
+let max_n a b = if b == () then a else max_n (max a b);
+max_n 1 3 6 2 ();

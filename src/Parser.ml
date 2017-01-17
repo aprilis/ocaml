@@ -231,8 +231,8 @@ let rec fold_expr bg en =
         fold_bin (list_filter ["**"]);
         fold_bin (list_filter ["*"; "/"; "%"]);
         fold_bin (list_filter ["+"; "-"]);
-        fold_bin (list_filter ["^";"|";"&"]);
-        fold_bin (list_filter ["==";">";"<";">=";"<="]);
+        fold_bin (list_filter ["^";"|";"&";"<<";">>"]);
+        fold_bin (list_filter ["==";">";"<";">=";"<=";"!="]);
         fold_bin (list_filter ["||";"&&"]);
         fold_bin_rev (list_filter ["::"]);
         fold_bin (list_filter [":"]);

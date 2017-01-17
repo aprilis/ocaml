@@ -292,7 +292,8 @@ let eval program e =
                         let result = go loc body in
                         pop_pattern program pat;
                         result
-                  | VNative f -> f (go local a)
+                  | VNative f -> (try f (go local a) with Match_failure (_, _, _) ->
+                                 fail_runtime "wrong arguments for native function")
                   | _ -> fail_runtime "type error: expected function"
             end
             | Tuple t -> VTuple (List.map (go local) t)
@@ -455,6 +456,10 @@ let init program =
         match a, b with
             VInt a, VInt b -> VInt (a land b)
           | _ -> failwith "wrong types");
+    add_bin_operator program "^" (fun a b ->
+        match a, b with
+            VInt a, VInt b -> VInt (a lxor b)
+          | _ -> failwith "wrong types");
     add_bin_operator program "<<" (fun a b ->
         match a, b with
             VInt a, VInt b -> VInt (a lsl b)
@@ -462,10 +467,6 @@ let init program =
     add_bin_operator program ">>" (fun a b ->
         match a, b with
             VInt a, VInt b -> VInt (a lsr b)
-          | _ -> failwith "wrong types");
-    add_bin_operator program "<<" (fun a b ->
-        match a, b with
-            VInt a, VInt b -> VInt (a lsl b)
           | _ -> failwith "wrong types");
     add_bin_operator program "::" (fun a b ->
         match a, b with
@@ -500,6 +501,7 @@ let init program =
           | VString x, VType TBool -> VBool (bool_of_string x)
           | VString x, VType TList -> VList (explode x |> List.map (fun x -> VChar x))
           | VBool x, VType TInt -> VInt (if x then 1 else 0)
+          | VBool x, VType TFloat -> VFloat (if x then 1.0 else 0.0)
           | VBool x, VType TString -> VString (string_of_bool x)
           | VList x, VType TString -> VString (List.map (fun x -> let VChar y = go x (VType TChar) in y) x |> implode)
           | VList a, VTuple b when List.length a = List.length b -> VTuple (List.map2 go a b)
@@ -520,7 +522,13 @@ let init program =
         match x with
             VInt x -> VInt (lnot x)
           | _ -> failwith "wrong types");
-    add_value program "typeof" (VNative typeof)
+    add_value program "typeof" (VNative typeof);
+    add_value program "getchar" (VNative (fun (VString s) ->
+                                    VNative (fun (VInt x) ->
+                                    try VChar(String.get s x) with Invalid_argument _ ->
+                                        fail_runtime "Index out of range")));
+    add_value program "length" (VNative (function (VString s) -> VInt(String.length s)
+                                                | (VList l) -> VInt(List.length l)))
 
 let create () = let program = { ids = Hashtbl.create 50;
                     values = Vector.create (Stack.create ());

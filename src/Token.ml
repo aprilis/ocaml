@@ -31,7 +31,7 @@ let characters = [(Digit, "0123456789");
                 (Whitespace, " \n\t\r");
                 (Dot, ".");
                 (Special1, "()[];,");
-                (Special2, "@$:~!%^&*-+=|<,>/")]
+                (Special2, "@:~!%^&*-+=|<>/")]
 
 let string_of_char c = String.make 1 c
 

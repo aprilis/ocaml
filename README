@@ -1,0 +1,78 @@
+Interpreter ML-a
+
+Wymagania:
+Do skompilowania programu potrzebny jest ocaml w wersji 4.04.0 oraz ocamlbuild.
+Najłatwiej jest je zainstalować przez opam:
+opam switch 4.04.0  #ustawienie wymaganej wersji ocamla
+opam install ocamlbuild   #instalacja ocamlbuild
+
+Kompilacja:
+jest wykonywana za pomocą komendy:
+make native
+
+Powstanie wtedy plik wykonywalny main.native
+
+
+Użycie:
+Po uruchomieniu pliku main.native uruchomi się środowisko interaktywne. Można w nim wykonywać następujące instrukcje:
+1. quit -- zakończenie programu
+2. import "sciezka_do_pliku" -- wczytuje plik składający się z instrukcji i wykonuje je
+3. <deklaracja> -- przypisuje podanym identyfikatorom wartości i wypisuje je na standardowe wyjście
+4. <wyrażenie> -- oblicza wartość wyrażenia i wypisuje je na standardowe wyjście
+Po każdej instrukcji powinien wystąpić średnik.
+
+Składnia języka jest zbliżona do OCamla.
+Przykład wyrażenia: (2 + 2) * 2
+Przykład deklaracji: let a = (2 + 2) * 2 and b = fun x -> x
+Elementy języka OCaml obecne w języku obsługiwanym przez interpreter:
+let <pattern1> = <expression1> and <pattern2> = <expression2> and ... and <pattern_n> = <expression_n>
+let <pattern1> = <expression1> and <pattern2> = <expression2> and ... and <pattern_n> = <expression_n> in <expression>
+fun pattern1 pattern2 ... pattern_n -> <expression>
+if <expression1> then <expression2> else <expression3>
+match <expression> with <pattern1> => <expression1> or ... or <pattern_n> => <expression_n>  
+    -- tutaj | zostało zastąpione przez or oraz -> zostało zastąpione przez =>
+Krotki - w przeciwieństwie do OCamla muszą być w nawiasach. Przykład (<expression1>, <expression2>, ..., <expression_n>)
+Listy - w przeciwieństwie do OCamla elementy są oddzielone przecinkami. Przykład [<expression1>, <expression2>, ..., <expression_n>]
+Dopasowanie do wzorca: obejmuje dopasowanie krotek, list, zmiennych, stałych, wildcard (_), sprawdzanie typów
+Stałe (liczby, znaki, stringi, true/false, ()) traktowane są podobnie jak w OCamlu (wyjątek - w stałych zmiennoprzecinkowych nie jest konieczna cyfra przed kropką)
+
+W przeciwieństwie do OCamla, konstrukcje let <p1> = <e1> and <p2> = <e2> and ... and <pn> = <en> są domyślnie rekurencyjne.
+Istotna jest przy tym kolejność przypisywania wartości - zmiennym przypisywane są wartości w kolejności ich deklaracji.
+Odwołanie się do zmiennej, której nie przypisano wartości skutkuje błędem wykonania.
+
+Język obsługuje następujące typy: int, float, bool, char, string, list, type, unit, function oraz krotka reprezentowana jako (typ1, typ2, ..., typn).
+Możliwe jest rzutowanie między typami za pomocą operatora :
+Możliwe konwersje (w obie strony): int - float, int - string, int - bool, int - char, float - string, float - bool, char - string*,
+ string - list, list - tuple**, tuple - tuple**
+*konwersja zachodzi tylko z char na string
+**zakończy się sukcesem tylko jeśli obiekty mają równe długości i konwertowalne odpowiadające sobie elementy
+
+Typizacja w języku jest dynamiczna - typ zmiennych jest ustalany w czasie wykonywania programu. 
+Z tego wynika m. in. fakt, że wszystkie funkcje są tego samego typu - function, a wszystkie listy są typu list.
+
+Podczas dopasowania do wzorca można wykonać sprawdzanie typu - również za pomocą operatora :
+Dostępne jest tutaj również słowo kluczowe any które odpowiada dowolnemu typowi.
+
+Najwyższy priorytet ma aplikacja do funkcji, stosowana w wypadku zestawienia dwóch wyrażeń obok siebie (aplikacja wiąże w prawo).
+Ponadto operatory unarne mają wyższy priorytet niż binarne. Operatory binarne, z wyjątkiem :: wiążą w prawo.
+Hierarchia operatorów:
+1. **
+2. *, /, %
+3. +, -
+4. ^, |, &, <<, >>
+5. ==, >, <, >=, <=, !=
+6. ||, &&
+7. ::
+8. :
+Powyższe operatory działają tak, jak ich odpowiedniki w C++. Wyjątkami są:
+ ** - potęgowanie
+ :: - dołączenie elementu na początek listy
+ : - operator rzutowania opisany wcześniej
+Operatory unarne to: ~, !, - i ich znaczenie jest takie, jak w C++.
+
+Dostępne są też 3 funkcje wbudowane:
+    typeof x - zwraca typ x
+    getchar (str:string) (n:int) - zwraca n-ty element str
+    length x - zwraca długość x (listy lub stringa)
+
+Przykładowe instrukcje zawarte są w pliku test.mml
